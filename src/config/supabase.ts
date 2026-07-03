@@ -5,6 +5,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import 'react-native-url-polyfill/auto';
 
 // Defaults — replace with your project values, or override via supabase.local.ts
@@ -32,34 +34,21 @@ try {
 // Keychain cap and trigger a SecureStore warning. That warning is benign
 // (Keychain still accepts it); for a hard guarantee, swap the native branch
 // for react-native-keychain (no size cap). See README.
-const ExpoSecureStoreAdapter = {
+const secureStoreAdapter = {
   getItem: (key: string) => SecureStore.getItemAsync(key),
   setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
   removeItem: (key: string) => SecureStore.deleteItemAsync(key),
 };
 
-const AsyncStorageAdapter = {
+const asyncStorageAdapter = {
   getItem: (key: string) => AsyncStorage.getItem(key),
   setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
   removeItem: (key: string) => AsyncStorage.removeItem(key),
 };
 
-// Lazy-import the platform-specific store so the web bundle never loads
-// expo-secure-store (which would throw at import time on web).
-let storageAdapter: any;
-if (Platform.OS === 'web') {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
-  storageAdapter = AsyncStorageAdapter;
-} else {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const SecureStore = require('expo-secure-store');
-  storageAdapter = {
-    getItem: (key: string) => SecureStore.getItemAsync(key),
-    setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
-    removeItem: (key: string) => SecureStore.deleteItemAsync(key),
-  };
-}
+// expo-secure-store throws if imported on web, so guard usage by platform.
+// Both modules are still bundled, but only the matching adapter is invoked.
+const storageAdapter = Platform.OS === 'web' ? asyncStorageAdapter : secureStoreAdapter;
 
 export const supabase = createClient(localUrl, localAnon, {
   auth: {
