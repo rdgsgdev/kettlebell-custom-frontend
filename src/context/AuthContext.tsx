@@ -20,10 +20,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setIsLoading(false);
-    });
+    // Always settle isLoading, even if the underlying storage adapter rejects
+    // (e.g. Keychain/localStorage failure). Previously a rejected getSession()
+    // left isLoading=true forever → infinite spinner on the login screen.
+    supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session))
+      .catch((e) => console.warn('getSession failed', e))
+      .finally(() => setIsLoading(false));
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);

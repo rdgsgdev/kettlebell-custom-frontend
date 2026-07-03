@@ -4,8 +4,7 @@
 // (gitignored) for dev against a separate project.
 
 import { createClient } from '@supabase/supabase-js';
-import * as SecureStore from 'expo-secure-store';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import 'react-native-url-polyfill/auto';
 
 // Defaults — replace with your project values, or override via supabase.local.ts
@@ -23,16 +22,48 @@ try {
   // no local override — fine
 }
 
-// expo-secure-store adapter so supabase-js persists the session in the Keychain.
+// Platform-aware storage adapter.
+//  * Native (iOS/Android): expo-secure-store → Keychain/Keystore (encrypted).
+//  * Web: AsyncStorage → localStorage. expo-secure-store is unsupported on web
+//    and throws, which previously swallowed the getSession() rejection and
+//    left AuthContext stuck on isLoading=true (infinite spinner on login).
+//
+// NOTE: the full supabase session blob can exceed expo-secure-store's ~2KB
+// Keychain cap and trigger a SecureStore warning. That warning is benign
+// (Keychain still accepts it); for a hard guarantee, swap the native branch
+// for react-native-keychain (no size cap). See README.
 const ExpoSecureStoreAdapter = {
   getItem: (key: string) => SecureStore.getItemAsync(key),
   setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
   removeItem: (key: string) => SecureStore.deleteItemAsync(key),
 };
 
+const AsyncStorageAdapter = {
+  getItem: (key: string) => AsyncStorage.getItem(key),
+  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
+  removeItem: (key: string) => AsyncStorage.removeItem(key),
+};
+
+// Lazy-import the platform-specific store so the web bundle never loads
+// expo-secure-store (which would throw at import time on web).
+let storageAdapter: any;
+if (Platform.OS === 'web') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  storageAdapter = AsyncStorageAdapter;
+} else {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const SecureStore = require('expo-secure-store');
+  storageAdapter = {
+    getItem: (key: string) => SecureStore.getItemAsync(key),
+    setItem: (key: string, value: string) => SecureStore.setItemAsync(key, value),
+    removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+  };
+}
+
 export const supabase = createClient(localUrl, localAnon, {
   auth: {
-    storage: ExpoSecureStoreAdapter as any,
+    storage: storageAdapter,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
@@ -40,8 +71,12 @@ export const supabase = createClient(localUrl, localAnon, {
 });
 
 // Tell supabase-js to refresh the token when the app returns to the foreground.
-AppState.addEventListener('change', (state) => {
-  if (state === 'active') supabase.auth.refreshSession();
-});
+// (No-op on web — AppState change events still fire but are harmless.)
+if (Platform.OS !== 'web') {
+  AppState.addEventListener('change', (state) => {
+    if (state === 'active') supabase.auth.refreshSession();
+  });
+}
 
 export const SUPABASE_URL = localUrl;
+
