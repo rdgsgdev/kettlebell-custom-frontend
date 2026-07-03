@@ -21,9 +21,11 @@ import { apiImportPayload } from '../storage/api';
 import { pullAll } from '../storage';
 import { Spacing, Radius, Typography } from '../theme';
 import { useSettings } from '../context/SettingsContext';
+import { useAppContext } from '../context/AppContext';
 
 export default function ImportScreen({ onClose }: { onClose: () => void }) {
-  const { colors } = useSettings();
+  const { colors, reloadFromCache: reloadSettings } = useSettings();
+  const { reloadFromCache: reloadApp } = useAppContext();
   const { top } = useSafeAreaInsets();
   const [status, setStatus] = useState<'idle' | 'reading' | 'importing' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
@@ -72,6 +74,9 @@ export default function ImportScreen({ onClose }: { onClose: () => void }) {
 
       // Refresh the local cache so the imported data appears immediately.
       await pullAll();
+      // Re-read the cache into context state so every screen updates without
+      // an app restart.
+      await Promise.all([reloadApp(), reloadSettings()]);
       setStatus('done');
       setMessage('Import complete.');
     } catch (e) {

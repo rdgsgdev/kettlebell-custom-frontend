@@ -23,6 +23,9 @@ interface AppContextValue {
   toggleActiveWorkout: (id: string) => void;
   saveExercise: (exercise: Exercise) => Promise<void>;
   deleteExercise: (id: string) => Promise<void>;
+  /** Re-read all collections from the local cache. Call after a pull/import
+   *  so the screens reflect freshly synced data without an app restart. */
+  reloadFromCache: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -34,21 +37,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeWorkoutIds, setActiveWorkoutIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Load every collection from the local cache into state.
+  const reloadFromCache = useCallback(async () => {
+    const [t, l, a, e] = await Promise.all([
+      Storage.loadTemplates(),
+      Storage.loadLogs(),
+      Storage.getActiveWorkoutIds(),
+      Storage.loadExercises(),
+    ]);
+    setTemplates(t);
+    setLogs(l);
+    setActiveWorkoutIds(a);
+    setExercises(e);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const [t, l, a, e] = await Promise.all([
-        Storage.loadTemplates(),
-        Storage.loadLogs(),
-        Storage.getActiveWorkoutIds(),
-        Storage.loadExercises(),
-      ]);
-      setTemplates(t);
-      setLogs(l);
-      setActiveWorkoutIds(a);
-      setExercises(e);
+      await reloadFromCache();
       setIsLoading(false);
     })();
-  }, []);
+  }, [reloadFromCache]);
 
   const saveTemplate = useCallback(
     async (template: WorkoutTemplate) => {
@@ -141,6 +149,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toggleActiveWorkout,
       saveExercise,
       deleteExercise,
+      reloadFromCache,
     }),
     [
       templates,
@@ -156,6 +165,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       toggleActiveWorkout,
       saveExercise,
       deleteExercise,
+      reloadFromCache,
     ],
   );
 

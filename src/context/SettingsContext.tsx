@@ -20,6 +20,8 @@ interface SettingsContextValue {
   colors: ThemeColors;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
   updateProfile: (patch: Partial<UserProfile>) => Promise<void>;
+  /** Re-read settings + profile from the local cache (after a pull/import). */
+  reloadFromCache: () => Promise<void>;
   isLoaded: boolean;
 }
 
@@ -37,14 +39,18 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [isLoaded, setIsLoaded] = useState(false);
   const systemScheme = useColorScheme();
 
+  const reloadFromCache = useCallback(async () => {
+    const [s, p] = await Promise.all([Storage.loadSettings(), Storage.loadProfile()]);
+    setSettings(s);
+    setProfile(p);
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const [s, p] = await Promise.all([Storage.loadSettings(), Storage.loadProfile()]);
-      setSettings(s);
-      setProfile(p);
+      await reloadFromCache();
       setIsLoaded(true);
     })();
-  }, []);
+  }, [reloadFromCache]);
 
   const effectiveTheme = useMemo<'light' | 'dark'>(() => {
     if (settings.theme === 'system') return systemScheme === 'light' ? 'light' : 'dark';
@@ -69,8 +75,8 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [profile]);
 
   const value = useMemo(
-    () => ({ settings, profile, effectiveTheme, colors, updateSettings, updateProfile, isLoaded }),
-    [settings, profile, effectiveTheme, colors, updateSettings, updateProfile, isLoaded],
+    () => ({ settings, profile, effectiveTheme, colors, updateSettings, updateProfile, reloadFromCache, isLoaded }),
+    [settings, profile, effectiveTheme, colors, updateSettings, updateProfile, reloadFromCache, isLoaded],
   );
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;

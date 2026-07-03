@@ -35,6 +35,23 @@ export interface UserProfile {
   goals: string[];
 }
 
+export const DEFAULT_BLOCK_DEFS: CustomBlockDef[] = [
+  { id: 'cbd-warmup', label: 'Warm-up', color: '#60A5FA', baseType: 'standard' },
+  { id: 'cbd-main', label: 'Main', color: '#FF6B35', baseType: 'standard' },
+  { id: 'cbd-finisher', label: 'Finisher', color: '#A78BFA', baseType: 'standard' },
+  { id: 'cbd-emom', label: 'EMOM', color: '#FBBF24', baseType: 'emom' },
+];
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'system',
+  customBlockDefs: DEFAULT_BLOCK_DEFS,
+};
+
+export const DEFAULT_PROFILE: UserProfile = {
+  name: '',
+  goals: [],
+};
+
 // ─── Exercise Library ─────────────────────────────────────────────────────────
 
 export type ExerciseCategory = 'strength' | 'cardio' | 'flexibility' | 'balance';
