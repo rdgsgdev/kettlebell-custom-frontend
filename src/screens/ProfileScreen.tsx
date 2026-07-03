@@ -15,7 +15,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
 import { Spacing, Radius, Typography } from '../theme';
 import SettingsScreen from './SettingsScreen';
-import ImportScreen from './ImportScreen';
 
 const GOALS = [
   { id: 'weight_loss', label: 'Lose weight', icon: 'trending-down-outline' as const },
@@ -29,7 +28,6 @@ const GOALS = [
 export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
-  const [showImport, setShowImport] = useState(false);
   const { top } = useSafeAreaInsets();
 
   const toggleGoal = (id: string) => {
@@ -173,32 +171,12 @@ export default function ProfileScreen() {
             </View>
           </View>
 
-          {/* Migrate data from the legacy app */}
-          <TouchableOpacity
-            style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => setShowImport(true)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.migrateRow}>
-              <Ionicons name="cloud-download-outline" size={18} color={colors.accent} />
-              <View style={styles.migrateText}>
-                <Text style={[styles.migrateTitle, { color: colors.textPrimary }]}>Migrate data</Text>
-                <Text style={[styles.migrateHint, { color: colors.textTertiary }]}>
-                  Import from a previous KBC export file
-                </Text>
-              </View>
-              <Ionicons name="chevron-forward-outline" size={16} color={colors.textTertiary} />
-            </View>
-          </TouchableOpacity>
+          {/* Migrate data lives in Settings → General */}
         </ScrollView>
       </KeyboardAvoidingView>
 
       <Modal visible={showSettings} animationType="slide" onRequestClose={() => setShowSettings(false)}>
         <SettingsScreen onClose={() => setShowSettings(false)} />
-      </Modal>
-
-      <Modal visible={showImport} animationType="slide" onRequestClose={() => setShowImport(false)}>
-        <ImportScreen onClose={() => setShowImport(false)} />
       </Modal>
     </View>
   );
@@ -267,8 +245,4 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   goalLabel: { ...Typography.captionBold },
-  migrateRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md },
-  migrateText: { flex: 1 },
-  migrateTitle: { ...Typography.bodyBold },
-  migrateHint: { ...Typography.caption },
 });

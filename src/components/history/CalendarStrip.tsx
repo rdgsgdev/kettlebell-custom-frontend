@@ -54,8 +54,13 @@ export default function CalendarStrip({ workoutDates, selectedDate, onSelectDate
 
         return (
           <View key={iso} style={styles.dayWrapper}>
-            {isFirstOfMonth && (
+            {/* Render a label on the 1st of each month; on other days render an
+                invisible placeholder of identical height so every wrapper is the
+                same height and the day buttons stay vertically aligned. */}
+            {isFirstOfMonth ? (
               <Text style={styles.monthLabel}>{MONTH_LABELS[day.getMonth()]}</Text>
+            ) : (
+              <Text style={styles.monthLabelPlaceholder}>{MONTH_LABELS[day.getMonth()]}</Text>
             )}
             <TouchableOpacity
               onPress={() => onSelectDate(iso)}
@@ -116,6 +121,14 @@ function makeStyles(c: typeof Colors) {
     monthLabel: {
       ...Typography.tiny,
       color: c.textTertiary,
+      marginBottom: 2,
+      letterSpacing: 0.5,
+    },
+    // Invisible spacer that matches monthLabel's height so non-first-of-month
+    // wrappers occupy the same vertical space, keeping day buttons aligned.
+    monthLabelPlaceholder: {
+      ...Typography.tiny,
+      color: 'transparent',
       marginBottom: 2,
       letterSpacing: 0.5,
     },

@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,6 +18,7 @@ import { useSettings } from '../context/SettingsContext';
 import { CustomBlockDef, DEFAULT_BLOCK_DEFS } from '../models';
 import { Spacing, Radius, Typography } from '../theme';
 import { generateId } from '../utils/helpers';
+import ImportScreen from './ImportScreen';
 
 const COLOR_PALETTE = [
   '#FF6B35', '#60A5FA', '#A78BFA', '#4ADE80',
@@ -42,6 +44,7 @@ export default function SettingsScreen({ onClose }: Props) {
   });
 
   const [blockDraft, setBlockDraft] = useState<CustomBlockDef>(emptyDef());
+  const [showImport, setShowImport] = useState(false);
 
   const openAdd = () => {
     setBlockDraft(emptyDef());
@@ -153,6 +156,24 @@ export default function SettingsScreen({ onClose }: Props) {
                 Server-managed — sign in to use AI lookup
               </Text>
             </View>
+
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+            {/* Migrate data from the legacy app */}
+            <TouchableOpacity
+              style={styles.migrateRow}
+              onPress={() => setShowImport(true)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="cloud-download-outline" size={18} color={colors.accent} />
+              <View style={styles.migrateText}>
+                <Text style={[styles.rowLabel, { color: colors.textPrimary }]}>Migrate data</Text>
+                <Text style={[styles.rowHint, { color: colors.textTertiary }]}>
+                  Import from a previous KBC export file
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward-outline" size={16} color={colors.textTertiary} />
+            </TouchableOpacity>
           </View>
 
           {/* ── Workouts ────────────────────────────────────────────────────── */}
@@ -284,6 +305,10 @@ export default function SettingsScreen({ onClose }: Props) {
           <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <Modal visible={showImport} animationType="slide" onRequestClose={() => setShowImport(false)}>
+        <ImportScreen onClose={() => setShowImport(false)} />
+      </Modal>
     </View>
   );
 }
@@ -343,6 +368,13 @@ const styles = StyleSheet.create({
   apiKeyInput: { flex: 1, ...Typography.body },
   apiKeyStatus: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   apiKeyStatusText: { ...Typography.caption },
+  migrateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  migrateText: { flex: 1 },
   blockDefRow: {
     flexDirection: 'row',
     alignItems: 'center',
