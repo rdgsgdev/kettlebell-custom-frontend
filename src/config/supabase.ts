@@ -5,18 +5,22 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import 'react-native-url-polyfill/auto';
 
-// Resolution order: environment variables > supabase.local.ts > defaults.
-// Environment variables are how Render (or any CI/host) injects secrets at
-// build/runtime without touching source files.
+// Resolution order:
+//  1. expo-constants (app.config.ts extra.*) — set via EXPO_PUBLIC_ env vars,
+//     which @expo/env inlines into the bundle at build time. This works on
+//     Render, CI, and any hosted build.
+//  2. supabase.local.ts — for local dev only (gitignored).
+//  3. Hardcoded defaults — you'll get errors if neither is configured.
 const DEFAULT_URL = 'https://YOUR-PROJECT-ref.supabase.co';
 const DEFAULT_ANON_KEY = 'your-anon-key';
 
-let localUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '').trim();
-let localAnon = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
+let localUrl = (Constants.expoConfig?.extra?.supabaseUrl as string | undefined) || '';
+let localAnon = (Constants.expoConfig?.extra?.supabaseAnonKey as string | undefined) || '';
 
 if (!localUrl || !localAnon) {
   try {
