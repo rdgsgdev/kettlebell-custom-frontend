@@ -5,6 +5,7 @@ import {
   View,
   Text,
   TextInput,
+  TouchableOpacity,
   StyleSheet,
   SafeAreaView,
   KeyboardAvoidingView,
@@ -73,7 +74,12 @@ export default function AuthScreen() {
 
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        <View style={styles.actionRow} onTouchEnd={busy ? undefined : submit}>
+        <TouchableOpacity
+          style={styles.actionRow}
+          onPress={busy ? undefined : submit}
+          activeOpacity={0.8}
+          disabled={busy}
+        >
           {busy ? (
             <ActivityIndicator color={C.textPrimary} />
           ) : (
@@ -81,13 +87,17 @@ export default function AuthScreen() {
               {mode === 'signin' ? 'Sign In' : 'Create Account'}
             </Text>
           )}
-        </View>
+        </TouchableOpacity>
 
-        <View style={styles.switchRow} onTouchEnd={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>
+        <TouchableOpacity
+          style={styles.switchRow}
+          onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
+          activeOpacity={0.7}
+        >
           <Text style={styles.switchText}>
             {mode === 'signin' ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
           </Text>
-        </View>
+        </TouchableOpacity>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
