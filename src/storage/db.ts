@@ -1,8 +1,15 @@
 // Local SQLite cache — mirrors the server tables so the app works offline.
 // Data is read from here by the contexts; writes go through here first, then
 // get pushed to Supabase by sync.ts.
+//
+// NOTE: this module is native-only. On web, storage/index.ts and sync.ts
+// short-circuit every call before reaching here, so the expo-sqlite import
+// below is never actually evaluated in the browser. We keep it as a static
+// import for native; if it ever causes a web module-eval error, switch to a
+// lazy require() inside getDb().
 
 import * as SQLite from 'expo-sqlite';
+import type { SQLiteDatabase } from 'expo-sqlite';
 import {
   Exercise,
   WorkoutTemplate,
@@ -18,9 +25,9 @@ import {
 } from '../models';
 
 const DB_NAME = 'kbc.db';
-let db: SQLite.SQLiteDatabase | null = null;
+let db: SQLiteDatabase | null = null;
 
-async function getDb(): Promise<SQLite.SQLiteDatabase> {
+async function getDb(): Promise<SQLiteDatabase> {
   if (!db) {
     db = await SQLite.openDatabaseAsync(DB_NAME);
     await db.execAsync(PRAGMA);

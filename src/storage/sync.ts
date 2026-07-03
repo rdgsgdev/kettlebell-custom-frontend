@@ -38,6 +38,7 @@ import {
   getPendingKv,
   clearPendingKv,
 } from './db';
+import { Platform } from 'react-native';
 import {
   apiPullExercises,
   apiPullTemplates,
@@ -57,11 +58,15 @@ import { Exercise, WorkoutTemplate, WorkoutLog } from '../models';
 
 let pushInFlight = false;
 
+// On web there is no local SQLite cache — reads/writes go straight to Supabase
+// via storage/index.ts, so the sync engine is a no-op there.
+const isWeb = Platform.OS === 'web';
+
 /** Push all locally-dirty rows to the server. Best-effort; errors are swallowed
  *  so a failed push doesn't crash a UI save — the row stays dirty and will be
  *  retried on the next push/foreground. */
 export async function pushDirty(): Promise<void> {
-  if (pushInFlight) return;
+  if (isWeb || pushInFlight) return;
   pushInFlight = true;
   try {
     // Exercises
@@ -113,8 +118,10 @@ export async function pushDirty(): Promise<void> {
   }
 }
 
-/** Pull all server changes since the last sync and merge into the local cache. */
+/** Pull all server changes since the last sync and merge into the local cache.
+ *  No-op on web (no local cache — reads are direct). */
 export async function pullAll(): Promise<void> {
+  if (isWeb) return;
   const since = await getLastPullAt();
   const newCursor = new Date().toISOString();
 
