@@ -9,20 +9,27 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import 'react-native-url-polyfill/auto';
 
-// Defaults — replace with your project values, or override via supabase.local.ts
+// Resolution order: environment variables > supabase.local.ts > defaults.
+// Environment variables are how Render (or any CI/host) injects secrets at
+// build/runtime without touching source files.
 const DEFAULT_URL = 'https://YOUR-PROJECT-ref.supabase.co';
 const DEFAULT_ANON_KEY = 'your-anon-key';
 
-let localUrl = DEFAULT_URL;
-let localAnon = DEFAULT_ANON_KEY;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const local = require('./supabase.local');
-  if (local?.SUPABASE_URL) localUrl = local.SUPABASE_URL;
-  if (local?.SUPABASE_ANON_KEY) localAnon = local.SUPABASE_ANON_KEY;
-} catch {
-  // no local override — fine
+let localUrl = (process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '').trim();
+let localAnon = (process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
+
+if (!localUrl || !localAnon) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const local = require('./supabase.local');
+    if (!localUrl && local?.SUPABASE_URL) localUrl = local.SUPABASE_URL;
+    if (!localAnon && local?.SUPABASE_ANON_KEY) localAnon = local.SUPABASE_ANON_KEY;
+  } catch {
+    // no local override — fine
+  }
 }
+if (!localUrl) localUrl = DEFAULT_URL;
+if (!localAnon) localAnon = DEFAULT_ANON_KEY;
 
 // Platform-aware storage adapter.
 //  * Native (iOS/Android): expo-secure-store → Keychain/Keystore (encrypted).
