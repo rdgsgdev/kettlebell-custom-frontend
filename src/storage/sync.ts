@@ -35,6 +35,7 @@ import {
   clearDirtyTemplate,
   getDirtyLogs,
   clearDirtyLog,
+  getDirtyDeletedLogIds,
   getPendingKv,
   clearPendingKv,
 } from './db';
@@ -87,13 +88,23 @@ export async function pushDirty(): Promise<void> {
         console.warn('push template failed', tpl.id, e);
       }
     }
-    // Logs
+    // Logs (upserts — excludes soft-deleted rows)
     for (const log of await getDirtyLogs()) {
       try {
         await apiUpsertLog(log);
         await clearDirtyLog(log.id);
       } catch (e) {
         console.warn('push log failed', log.id, e);
+      }
+    }
+    // Logs (soft-deletes — propagate the deletion to the server, then hard
+    // delete locally so the row doesn't linger forever)
+    for (const id of await getDirtyDeletedLogIds()) {
+      try {
+        await apiDeleteLog(id);
+        await dbDeleteLog(id, false); // hard-delete from local cache
+      } catch (e) {
+        console.warn('push log delete failed', id, e);
       }
     }
     // KV (settings, profile)

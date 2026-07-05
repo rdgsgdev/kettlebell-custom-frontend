@@ -106,6 +106,29 @@ export async function saveLogs(logs: WorkoutLog[]): Promise<void> {
   pushDirty().catch(() => {});
 }
 
+/** Upsert a single log. Preferred over saveLogs() for add/update so we don't
+ *  accidentally re-insert logs that were soft-deleted by another device. */
+export async function saveOneLog(log: WorkoutLog): Promise<void> {
+  if (isWeb) {
+    await apiUpsertLog(log);
+    return;
+  }
+  await dbUpsertLog(log, true);
+  pushDirty().catch(() => {});
+}
+
+/** Soft-delete a single log (sets deleted_at). On native this marks the row
+ *  dirty so the deletion syncs to the server via pushDirty(); on web the
+ *  soft-delete UPDATE is applied directly to Supabase. */
+export async function deleteOneLog(id: string): Promise<void> {
+  if (isWeb) {
+    await apiDeleteLog(id);
+    return;
+  }
+  await dbDeleteLog(id, true);
+  pushDirty().catch(() => {});
+}
+
 // ── Active workout IDs (local-only, never persisted server-side) ──────────────
 export async function getActiveWorkoutIds(): Promise<string[]> {
   if (isWeb) return webActiveIds;

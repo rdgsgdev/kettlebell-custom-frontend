@@ -30,6 +30,12 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null);
 
+// Always keep logs sorted newest-first by startedAt so the History list is
+// consistent across platforms (native cache and Supabase both sort, but this
+// guarantees the order for any in-memory optimistic update too).
+const sortByStartedAtDesc = (logs: WorkoutLog[]) =>
+  [...logs].sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [templates, setTemplates] = useState<WorkoutTemplate[]>([]);
   const [logs, setLogs] = useState<WorkoutLog[]>([]);
@@ -46,7 +52,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Storage.loadExercises(),
     ]);
     setTemplates(t);
-    setLogs(l);
+    setLogs(sortByStartedAtDesc(l));
     setActiveWorkoutIds(a);
     setExercises(e);
   }, []);
@@ -80,29 +86,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const saveLog = useCallback(
     async (log: WorkoutLog) => {
-      const updated = [log, ...logs];
-      setLogs(updated);
-      await Storage.saveLogs(updated);
+      // Optimistic update + single-row write (avoids the replace-all diff that
+      // could accidentally un-delete rows soft-deleted elsewhere).
+      setLogs((prev) => (prev.some((l) => l.id === log.id)
+        ? prev.map((l) => (l.id === log.id ? log : l))
+        : [log, ...prev]));
+      await Storage.saveOneLog(log);
     },
-    [logs],
+    [],
   );
 
   const updateLog = useCallback(
     async (log: WorkoutLog) => {
-      const updated = logs.map((l) => (l.id === log.id ? log : l));
-      setLogs(updated);
-      await Storage.saveLogs(updated);
+      setLogs((prev) => prev.map((l) => (l.id === log.id ? log : l)));
+      await Storage.saveOneLog(log);
     },
-    [logs],
+    [],
   );
 
   const deleteLog = useCallback(
     async (id: string) => {
-      const updated = logs.filter((l) => l.id !== id);
-      setLogs(updated);
-      await Storage.saveLogs(updated);
+      setLogs((prev) => prev.filter((l) => l.id !== id));
+      await Storage.deleteOneLog(id);
     },
-    [logs],
+    [],
   );
 
   const toggleActiveWorkout = useCallback((id: string) => {

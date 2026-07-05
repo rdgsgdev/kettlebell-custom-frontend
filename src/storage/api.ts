@@ -320,11 +320,12 @@ export function logFromRow(r: LogRow): WorkoutLog {
 
 export async function apiPullLogs(since: string | null): Promise<{ logs: WorkoutLog[]; deletedIds: string[] }> {
   // Updated logs (including newly-soft-deleted ones, which we still want to see
-  // to mirror the deletion locally).
+  // to mirror the deletion locally). Ordered newest-first by started_at so the
+  // History list shows recent workouts on top (matches the native cache sort).
   let q = supabase
     .from('workout_logs')
     .select('*, item_logs(*)')
-    .order('updated_at', { ascending: true });
+    .order('started_at', { ascending: false });
   if (since) q = q.gt('updated_at', since);
   const { data, error } = await q;
   if (error) throw error;

@@ -90,6 +90,8 @@ export default function ExecutionScreen() {
   const exerciseTimerSecondsRef = useRef(0);
   const restTypeRef = useRef<'sets' | 'exercises'>('exercises');
   const savedStateRef = useRef<SavedState | null>(null);
+  const savingRef = useRef(false);
+  const [hasSaved, setHasSaved] = useState(false);
   const soundWarningRef = useRef<Audio.Sound | null>(null);
   const soundTickRef = useRef<Audio.Sound | null>(null);
   // Fresh-value refs for timer callback (avoids stale closures)
@@ -361,6 +363,8 @@ export default function ExecutionScreen() {
     setExerciseTimerSeconds(0);
     exerciseTimerSecondsRef.current = 0;
     savedStateRef.current = null;
+    savingRef.current = false;
+    setHasSaved(false);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     // Alarm is started on demand via the "Start alarm" button, not when the
     // workout starts — so the countdown and its notification begin together
@@ -733,7 +737,15 @@ export default function ExecutionScreen() {
       itemLogs,
     };
 
-    await saveLog(log);
+    if (savingRef.current) return; // guard against double-tap duplicates
+    savingRef.current = true;
+    try {
+      await saveLog(log);
+    } catch (e) {
+      savingRef.current = false;
+      throw e;
+    }
+    setHasSaved(true);
     savedStateRef.current = null;
     stopTimer();
     setPhase('idle');
@@ -1004,19 +1016,51 @@ export default function ExecutionScreen() {
                 );
               })}
             </View>
-            <TouchableOpacity style={styles.saveBtn} onPress={confirmLog} activeOpacity={0.8}>
-              <Ionicons name="save-outline" size={18} color="#fff" />
-              <Text style={styles.saveBtnText}>Save to History</Text>
-            </TouchableOpacity>
-            {isStopped && (
+            {hasSaved ? (
+              <View style={[styles.saveBtn, { backgroundColor: colors.success }]}>
+                <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                <Text style={styles.saveBtnText}>Saved to History</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.saveBtn, savingRef.current && { opacity: 0.6 }]}
+                onPress={confirmLog}
+                activeOpacity={0.8}
+                disabled={savingRef.current}
+              >
+                <Ionicons name="save-outline" size={18} color="#fff" />
+                <Text style={styles.saveBtnText}>Save to History</Text>
+              </TouchableOpacity>
+            )}
+            {hasSaved && (
+              <TouchableOpacity
+                style={styles.resumeBtn}
+                onPress={() => {
+                  // Reset to the template-select screen so the user can start
+                  // fresh or pick another workout.
+                  savingRef.current = false;
+                  setHasSaved(false);
+                  setSelectedTemplateId(null);
+                  setStartedAt(null);
+                  setPhase('idle');
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="checkmark-done-outline" size={18} color={colors.accent} />
+                <Text style={styles.resumeBtnText}>Done</Text>
+              </TouchableOpacity>
+            )}
+            {isStopped && !hasSaved && (
               <TouchableOpacity style={styles.resumeBtn} onPress={handleResume} activeOpacity={0.8}>
                 <Ionicons name="play-outline" size={18} color={colors.accent} />
                 <Text style={styles.resumeBtnText}>Resume Workout</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.discardBtn} onPress={handleDiscard} activeOpacity={0.7}>
-              <Text style={styles.discardBtnText}>Discard</Text>
-            </TouchableOpacity>
+            {!hasSaved && (
+              <TouchableOpacity style={styles.discardBtn} onPress={handleDiscard} activeOpacity={0.7}>
+                <Text style={styles.discardBtnText}>Discard</Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>

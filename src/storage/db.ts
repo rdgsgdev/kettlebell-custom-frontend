@@ -383,7 +383,9 @@ export async function clearDirtyTemplate(id: string): Promise<void> {
 
 export async function getDirtyLogs(): Promise<WorkoutLog[]> {
   return tx(async (db) => {
-    const rows = await db.getAllAsync<any>('SELECT * FROM logs WHERE dirty = 1');
+    const rows = await db.getAllAsync<any>(
+      'SELECT * FROM logs WHERE dirty = 1 AND deleted_at IS NULL',
+    );
     return rows.map((r) => ({
       id: r.id,
       templateId: r.template_id,
@@ -395,6 +397,16 @@ export async function getDirtyLogs(): Promise<WorkoutLog[]> {
       isPartial: bool(r.is_partial),
       itemLogs: JSON.parse(r.item_logs || '[]'),
     })) as WorkoutLog[];
+  });
+}
+
+/** IDs of logs that were soft-deleted locally and still need to be pushed. */
+export async function getDirtyDeletedLogIds(): Promise<string[]> {
+  return tx(async (db) => {
+    const rows = await db.getAllAsync<any>(
+      'SELECT id FROM logs WHERE dirty = 1 AND deleted_at IS NOT NULL',
+    );
+    return rows.map((r) => r.id as string);
   });
 }
 export async function clearDirtyLog(id: string): Promise<void> {
