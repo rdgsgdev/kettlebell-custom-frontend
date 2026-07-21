@@ -7,8 +7,9 @@ import {
   TextStyle,
   ActivityIndicator,
 } from 'react-native';
-import { Colors, Radius, Spacing, Typography } from '../../theme';
+import { Colors, Radius, Spacing } from '../../theme';
 import { useSettings } from '../../context/SettingsContext';
+import GlassSurface from './GlassSurface';
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type Size = 'sm' | 'md' | 'lg';
@@ -28,7 +29,9 @@ interface Props {
 function makeVariantStyles(c: typeof Colors): Record<Variant, { bg: string; text: string; border?: string }> {
   return {
     primary: { bg: c.accent, text: c.textPrimary },
-    secondary: { bg: c.surface, text: c.accent, border: c.border },
+    // secondary is now rendered by GlassSurface; these are kept only for the
+    // text/border color tokens the glass variant reuses.
+    secondary: { bg: 'transparent', text: c.accent, border: c.glassBorder },
     ghost: { bg: 'transparent', text: c.textSecondary },
     danger: { bg: c.dangerDim, text: c.danger, border: c.danger },
   };
@@ -57,6 +60,39 @@ export default function Button({
   const ss = sizeStyles[size];
   const opacity = disabled || loading ? 0.5 : 1;
 
+  const inner = loading ? (
+    <ActivityIndicator color={vs.text} size="small" />
+  ) : (
+    <>
+      {icon}
+      <Text style={[styles.label, { color: vs.text, fontSize: ss.fontSize }, textStyle]}>
+        {label}
+      </Text>
+    </>
+  );
+
+  // secondary → interactive glass pill (the natural fit for a secondary action
+  // floating over content). Primary/danger/ghost keep their solid fills.
+  if (variant === 'secondary') {
+    return (
+      <GlassSurface
+        interactive={!disabled && !loading}
+        radius={Radius.full}
+        intensity="regular"
+        style={[styles.base, { paddingVertical: ss.paddingV, paddingHorizontal: ss.paddingH, opacity }, style]}
+      >
+        <TouchableOpacity
+          onPress={onPress}
+          disabled={disabled || loading}
+          activeOpacity={0.75}
+          style={styles.touchFill}
+        >
+          {inner}
+        </TouchableOpacity>
+      </GlassSurface>
+    );
+  }
+
   return (
     <TouchableOpacity
       onPress={onPress}
@@ -75,18 +111,7 @@ export default function Button({
         style,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator color={vs.text} size="small" />
-      ) : (
-        <>
-          {icon}
-          <Text
-            style={[styles.label, { color: vs.text, fontSize: ss.fontSize }, textStyle]}
-          >
-            {label}
-          </Text>
-        </>
-      )}
+      {inner}
     </TouchableOpacity>
   );
 }
@@ -98,6 +123,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: Spacing.xs,
+  },
+  touchFill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: 0,
+    paddingHorizontal: 0,
   },
   label: {
     fontWeight: '600',

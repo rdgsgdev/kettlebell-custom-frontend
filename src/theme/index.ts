@@ -31,6 +31,14 @@ export const DarkColors = {
   mobilityDim: 'rgba(45, 212, 191, 0.15)',
   stretchingColor: '#F472B6',
   stretchingDim: 'rgba(244, 114, 182, 0.15)',
+
+  // Liquid Glass surfaces — used by GlassSurface on platforms without the
+  // native iOS 26 effect (web, Android, older iOS). The fallback renders a
+  // translucent surface so the glass aesthetic holds across every platform.
+  glassTint: 'rgba(255, 255, 255, 0.06)',
+  glassBorder: 'rgba(255, 255, 255, 0.10)',
+  glassBlur: 40,
+  glassTintInteractive: 'rgba(255, 255, 255, 0.10)',
 } as const;
 
 export const LightColors = {
@@ -64,6 +72,12 @@ export const LightColors = {
   mobilityDim: 'rgba(20, 184, 166, 0.12)',
   stretchingColor: '#EC4899',
   stretchingDim: 'rgba(236, 72, 153, 0.12)',
+
+  // Liquid Glass surfaces — fallback translucency for non-iOS-26 platforms.
+  glassTint: 'rgba(255, 255, 255, 0.55)',
+  glassBorder: 'rgba(255, 255, 255, 0.40)',
+  glassBlur: 40,
+  glassTintInteractive: 'rgba(255, 255, 255, 0.65)',
 } as const;
 
 // Backwards-compatible alias — existing screens keep using `Colors` (dark)
