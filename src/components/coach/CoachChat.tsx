@@ -106,6 +106,15 @@ export default function CoachChat({ visible, onClose }: Props) {
     AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(toStore)).catch(() => {});
   }, [messages, historyLoaded]);
 
+  // ─── Dismiss template card ─────────────────────────────────────────────────
+  // Strips the aiResponse (template/exercises/blockDefs) from the message so the
+  // preview card disappears, but keeps the AI's text reply in the conversation.
+  const dismissCard = useCallback((msgId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msgId ? { ...m, aiResponse: undefined } : m)),
+    );
+  }, []);
+
   const clearHistory = useCallback(() => {
     Alert.alert(
       'Clear chat',
@@ -192,6 +201,7 @@ export default function CoachChat({ visible, onClose }: Props) {
             template={item.aiResponse.template}
             exercises={item.aiResponse.exercises}
             customBlockDefs={item.aiResponse.customBlockDefs}
+            onDiscard={() => dismissCard(item.id)}
           />
         )}
       </View>

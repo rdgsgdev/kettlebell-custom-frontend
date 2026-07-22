@@ -30,7 +30,7 @@ export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
   const [showCoach, setShowCoach] = useState(false);
-  const { top, bottom } = useSafeAreaInsets();
+  const { top } = useSafeAreaInsets();
 
   const toggleGoal = (id: string) => {
     const goals = profile.goals.includes(id)
@@ -177,14 +177,13 @@ export default function ProfileScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* AI Coach FAB — bottom-right, clears the tab bar */}
+      {/* AI Coach FAB — bottom-right, aligned with the + buttons on other tabs */}
       <TouchableOpacity
         style={[
           styles.fab,
           {
             backgroundColor: colors.accent,
             shadowColor: colors.accent,
-            bottom: Spacing.xl + (bottom || 8),
           },
         ]}
         onPress={() => setShowCoach(true)}
@@ -267,6 +266,7 @@ const styles = StyleSheet.create({
   goalLabel: { ...Typography.captionBold },
   fab: {
     position: 'absolute',
+    bottom: Spacing.xl,
     right: Spacing.lg,
     width: 56,
     height: 56,
