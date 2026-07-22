@@ -32,8 +32,28 @@ async function getDb(): Promise<SQLiteDatabase> {
     db = await SQLite.openDatabaseAsync(DB_NAME);
     await db.execAsync(PRAGMA);
     await db.execAsync(SCHEMA);
+    await migrateSchema(db);
   }
   return db;
+}
+
+/**
+ * Lightweight schema migrations for the local SQLite cache. CREATE TABLE IF NOT
+ * EXISTS only runs on first creation — existing installs keep the old columns.
+ * This adds new columns idempotently (ALTER TABLE ... ADD COLUMN fails silently
+ * if the column already exists, caught per-statement).
+ */
+async function migrateSchema(database: SQLiteDatabase): Promise<void> {
+  const addColumnIfMissing = async (table: string, column: string, def: string) => {
+    try {
+      await database.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${def};`);
+    } catch {
+      // column already exists — expected on subsequent runs
+    }
+  };
+  // 0004: templates get archived + deleted_at
+  await addColumnIfMissing('templates', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumnIfMissing('templates', 'deleted_at', 'TEXT');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
