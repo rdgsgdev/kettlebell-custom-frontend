@@ -55,8 +55,11 @@ const SUGGESTIONS = [
   'I want to work on my core and shoulders',
 ];
 
-let msgIdCounter = 0;
-const nextId = () => `msg-${++msgIdCounter}`;
+// Unique id per message. Uses Date.now() + a random suffix so ids never collide
+// with ids loaded from persisted history (a sequential counter would reset to
+// msg-1 on every app launch and clash with stored messages).
+let msgSeq = 0;
+const nextId = () => `msg-${Date.now().toString(36)}-${(msgSeq++).toString(36)}`;
 
 export default function CoachChat({ visible, onClose }: Props) {
   const { top, bottom } = useSafeAreaInsets();
