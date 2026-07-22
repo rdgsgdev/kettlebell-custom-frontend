@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- "development" = signed with a development certificate from a (free)
+	     Personal Team. AltStore re-signs the whole bundle with your free Apple
+	     ID on install, so this signature only needs to be valid enough for
+	     xcodebuild to produce the .ipa. -->
+	<key>method</key>
+	<string>development</string>
+
+	<!-- React Native apps ship their own binaries; do not strip/rewrite them. -->
+	<key>compileBitcode</key>
+	<false/>
+
+	<!-- Include dSYMs in the export for symbolication. -->
+	<key>uploadSymbols</key>
+	<false/>
+
+	<!-- Let Xcode auto-manage the provisioning profile for the free team rather
+	     than pinning a specific profile UUID (which expires and breaks rebuilds). -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+
+	<key>teamID</key>
+	<string>M26S98DGFB</string>
+
+	<!-- Strip app extensions/thin the binary for device-only export. -->
+	<key>thinning</key>
+	<string>&lt;none&gt;</string>
+</dict>
+</plist>
