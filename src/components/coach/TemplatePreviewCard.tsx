@@ -48,17 +48,23 @@ export default function TemplatePreviewCard({
   onSaved,
   onDiscard,
 }: Props) {
-  const { colors } = useSettings();
+  const { colors, settings, updateSettings } = useSettings();
   const { saveTemplate, saveExercise } = useAppContext();
-  const { settings, updateSettings } = useSettings();
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (saving || saved) return;
     setSaving(true);
+    setSaveError(null);
     try {
-      // 1. Merge any new custom block defs into settings.
+      // Guard: ensure template has at least one block with items.
+      if (!template?.blocks?.length || !template.blocks.some((b) => b.items?.length)) {
+        throw new Error('This workout is empty — ask the coach to regenerate it.');
+      }
+
+      // 1. Merge any new custom block defs into settings (dedup by label).
       if (customBlockDefs && customBlockDefs.length) {
         const existingLabels = new Set(settings.customBlockDefs.map((d) => d.label.toLowerCase()));
         const newDefs: CustomBlockDef[] = customBlockDefs
@@ -70,7 +76,7 @@ export default function TemplatePreviewCard({
             baseType: d.baseType,
           }));
         if (newDefs.length) {
-          updateSettings({ ...settings, customBlockDefs: [...settings.customBlockDefs, ...newDefs] });
+          updateSettings({ customBlockDefs: [...settings.customBlockDefs, ...newDefs] });
         }
       }
 
@@ -128,6 +134,8 @@ export default function TemplatePreviewCard({
 
       setSaved(true);
       onSaved?.();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Could not save — try again.');
     } finally {
       setSaving(false);
     }
@@ -171,6 +179,10 @@ export default function TemplatePreviewCard({
         <Text style={[styles.note, { color: colors.textTertiary }]}>
           + {exercises.length} new exercise{exercises.length > 1 ? 's' : ''} to add
         </Text>
+      )}
+
+      {saveError && (
+        <Text style={[styles.saveErrorText, { color: colors.warning }]}>{saveError}</Text>
       )}
 
       {!saved ? (
@@ -235,6 +247,7 @@ const styles = StyleSheet.create({
   emomMeta: { fontSize: 11, fontStyle: 'italic' },
   itemText: { fontSize: 12, lineHeight: 16 },
   note: { fontSize: 11, fontStyle: 'italic', paddingTop: 2 },
+  saveErrorText: { fontSize: 12, fontWeight: '600', paddingTop: 2 },
   actions: {
     flexDirection: 'row',
     gap: Spacing.sm,

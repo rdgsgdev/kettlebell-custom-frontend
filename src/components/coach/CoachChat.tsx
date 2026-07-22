@@ -1,10 +1,10 @@
 // CoachChat — full-screen chat modal for the AI Coach.
 //
-// Conversation is in-memory only (reset when the modal closes). The compressed
-// app context is built once per modal-open via useMemo so it doesn't rebuild on
-// every keystroke. The AI returns a structured response: a reply string plus
-// optional template/exercises/blockDefs, which render as a TemplatePreviewCard
-// attached to the AI message bubble.
+// Conversation persists to AsyncStorage so history survives modal close and
+// app restart. Long-press any message to copy it. The compressed app context
+// is built once per modal-open via useMemo. The AI returns a structured
+// response: a reply string plus optional template/exercises/blockDefs, which
+// render as a TemplatePreviewCard attached to the AI message bubble.
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
@@ -17,10 +17,14 @@ import {
   Platform,
   FlatList,
   Keyboard,
+  Alert,
   Modal,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import * as Clipboard from 'expo-clipboard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { useSettings } from '../../context/SettingsContext';
 import { useAppContext } from '../../context/AppContext';
@@ -42,6 +46,9 @@ interface DisplayMessage {
   error?: boolean;
 }
 
+const HISTORY_KEY = '@kbc/coach-history';
+const MAX_HISTORY = 50; // cap stored messages to avoid unbounded growth
+
 const SUGGESTIONS = [
   'Build me a 20-min conditioning workout',
   'Create a strength-focused session with my 24kg bell',
@@ -53,12 +60,11 @@ const nextId = () => `msg-${++msgIdCounter}`;
 
 export default function CoachChat({ visible, onClose }: Props) {
   const { top, bottom } = useSafeAreaInsets();
-  const { colors } = useSettings();
-  const { profile, settings } = useSettings();
+  const { colors, profile, settings } = useSettings();
   const { exercises, templates, logs } = useAppContext();
   const styles = makeStyles(colors);
 
-  // Context is built once per modal-open (resets if data changes while open).
+  // Context is built once per render cycle via memo on the inputs.
   const context = useMemo(
     () => buildChatContext(profile, exercises, templates, logs, settings.customBlockDefs),
     [profile, exercises, templates, logs, settings.customBlockDefs],
@@ -67,24 +73,65 @@ export default function CoachChat({ visible, onClose }: Props) {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const listRef = useRef<FlatList<DisplayMessage>>(null);
 
-  // Reset conversation when the modal opens.
+  // ─── History persistence ───────────────────────────────────────────────────
+  // Load from AsyncStorage when the modal first opens (once). Save whenever
+  // messages change after that.
   useEffect(() => {
-    if (visible) {
-      setMessages([
-        {
-          id: nextId(),
-          role: 'assistant',
-          content:
-            `Hey${profile.name ? ` ${profile.name}` : ''}! I'm your KBC Coach. Tell me what you're training for, what bell you've got, and how long you want to work out — I'll build you a workout.`,
-        },
-      ]);
-      setInput('');
-      setLoading(false);
-    }
-  }, [visible, profile.name]);
+    if (!visible || historyLoaded) return;
+    setHistoryLoaded(true);
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(HISTORY_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw) as DisplayMessage[];
+          if (Array.isArray(stored) && stored.length) {
+            setMessages(stored);
+            return;
+          }
+        }
+      } catch {
+        // corrupt/missing — fall through to greeting
+      }
+      setMessages([greeting(profile.name)]);
+    })();
+  }, [visible, historyLoaded, profile.name]);
 
+  // Persist messages whenever they change (after the initial load).
+  useEffect(() => {
+    if (!historyLoaded || messages.length === 0) return;
+    const toStore = messages.slice(-MAX_HISTORY);
+    AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(toStore)).catch(() => {});
+  }, [messages, historyLoaded]);
+
+  const clearHistory = useCallback(() => {
+    Alert.alert(
+      'Clear chat',
+      'Delete the conversation history? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: () => {
+            AsyncStorage.removeItem(HISTORY_KEY).catch(() => {});
+            setMessages([greeting(profile.name)]);
+          },
+        },
+      ],
+    );
+  }, [profile.name]);
+
+  // ─── Copy message ──────────────────────────────────────────────────────────
+  const copyMessage = useCallback(async (text: string) => {
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    await Clipboard.setStringAsync(text);
+    // brief visual feedback could go here; haptic is enough for now
+  }, []);
+
+  // ─── Send ──────────────────────────────────────────────────────────────────
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
@@ -98,20 +145,16 @@ export default function CoachChat({ visible, onClose }: Props) {
       Keyboard.dismiss();
 
       try {
-        // Build the conversation history for the API (content only).
         const history: ChatMessage[] = [...priorMessages, userMsg]
           .filter((m) => !m.error)
           .map((m) => ({ role: m.role, content: m.content }));
 
         const res = await chatWithAI(history, context);
 
-        const aiMsg: DisplayMessage = {
-          id: nextId(),
-          role: 'assistant',
-          content: res.reply,
-          aiResponse: res,
-        };
-        setMessages((prev) => [...prev, aiMsg]);
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), role: 'assistant', content: res.reply, aiResponse: res },
+        ]);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Something went wrong.';
         setMessages((prev) => [
@@ -144,7 +187,6 @@ export default function CoachChat({ visible, onClose }: Props) {
           )}
           <Text style={[styles.msgText, { color: colors.textPrimary }]}>{item.content}</Text>
         </View>
-        {/* Template preview attached to AI message */}
         {!isUser && item.aiResponse?.template && (
           <TemplatePreviewCard
             template={item.aiResponse.template}
@@ -155,6 +197,18 @@ export default function CoachChat({ visible, onClose }: Props) {
       </View>
     );
   };
+
+  const renderMessageWrapper = ({ item }: { item: DisplayMessage }) => (
+    <TouchableOpacity
+      onLongPress={() => copyMessage(item.content)}
+      activeOpacity={1}
+      delayLongPress={400}
+    >
+      {renderItem({ item })}
+    </TouchableOpacity>
+  );
+
+  const showGreeting = messages.length === 0;
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -168,22 +222,26 @@ export default function CoachChat({ visible, onClose }: Props) {
             <Ionicons name="sparkles" size={15} color={colors.accent} />
             <Text style={[styles.headerText, { color: colors.textPrimary }]}>AI Coach</Text>
           </View>
-          <View style={{ width: 24 }} />
+          {/* Clear history button — only shows when there's a conversation */}
+          {messages.length > 1 ? (
+            <TouchableOpacity onPress={clearHistory} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
+              <Ionicons name="trash-outline" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          ) : (
+            <View style={{ width: 24 }} />
+          )}
         </View>
 
-        {/* Message list (inverted so newest is at the bottom naturally) */}
+        {/* Message list */}
         <FlatList
           ref={listRef}
           data={messages}
-          renderItem={renderItem}
+          renderItem={renderMessageWrapper}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[styles.list, { paddingBottom: bottom + Spacing.md }]}
-          onContentSizeChange={() =>
-            listRef.current?.scrollToEnd({ animated: true })
-          }
+          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
           onLayout={() => listRef.current?.scrollToEnd({ animated: false })}
           showsVerticalScrollIndicator={false}
-          ListEmptyComponent={null}
         />
 
         {/* Typing indicator */}
@@ -199,7 +257,7 @@ export default function CoachChat({ visible, onClose }: Props) {
         )}
 
         {/* Suggestions (only before first user message) */}
-        {messages.length <= 1 && !loading && (
+        {showGreeting && !loading && (
           <View style={styles.suggestions}>
             {SUGGESTIONS.map((s) => (
               <TouchableOpacity
@@ -243,6 +301,15 @@ export default function CoachChat({ visible, onClose }: Props) {
       </View>
     </Modal>
   );
+}
+
+function greeting(name: string): DisplayMessage {
+  return {
+    id: nextId(),
+    role: 'assistant',
+    content:
+      `Hey${name ? ` ${name}` : ''}! I'm your KBC Coach. Tell me what you're training for, what bell you've got, and how long you want to work out — I'll build you a workout.`,
+  };
 }
 
 // ─── Typing indicator (three pulsing dots) ───────────────────────────────────
