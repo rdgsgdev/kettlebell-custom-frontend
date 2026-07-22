@@ -121,6 +121,7 @@ export interface WorkoutTemplate {
   createdAt: string;
   updatedAt: string;
   alarmMinutes?: number; // if set, an alarm fires this many minutes after workout start
+  archived?: boolean; // if true, the template is deactivated and shown in a collapsible section
 }
 
 // ─── Workout Logs (history) ───────────────────────────────────────────────────

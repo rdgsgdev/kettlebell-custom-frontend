@@ -61,24 +61,46 @@ let webActiveIds: string[] = [];
 
 // ── Templates ────────────────────────────────────────────────────────────────
 export async function loadTemplates(): Promise<WorkoutTemplate[]> {
-  if (isWeb) return apiPullTemplates(null);
+  if (isWeb) {
+    const { templates } = await apiPullTemplates(null);
+    return templates;
+  }
   return dbLoadTemplates();
 }
 
 export async function saveTemplates(templates: WorkoutTemplate[]): Promise<void> {
   if (isWeb) {
-    // Push every template up; delete any on the server not in this list.
-    const remote = await apiPullTemplates(null);
+    const { templates: remote } = await apiPullTemplates(null);
     const ids = new Set(templates.map((t) => t.id));
     for (const t of templates) await apiUpsertTemplate(t);
     for (const t of remote) if (!ids.has(t.id)) await apiDeleteTemplate(t.id);
     return;
   }
-  // Native: replace-all semantics against the local cache.
   const current = await dbLoadTemplates();
   const ids = new Set(templates.map((t) => t.id));
   for (const t of templates) await dbUpsertTemplate(t, true);
-  for (const t of current) if (!ids.has(t.id)) await dbDeleteTemplate(t.id);
+  for (const t of current) if (!ids.has(t.id)) await dbDeleteTemplate(t.id, true);
+  pushDirty().catch(() => {});
+}
+
+/** Upsert a single template. Preferred over saveTemplates() for add/update/archive
+ *  so we don't accidentally re-insert templates soft-deleted by another device. */
+export async function saveOneTemplate(template: WorkoutTemplate): Promise<void> {
+  if (isWeb) {
+    await apiUpsertTemplate(template);
+    return;
+  }
+  await dbUpsertTemplate(template, true);
+  pushDirty().catch(() => {});
+}
+
+/** Soft-delete a single template (sets deleted_at). Mirrors deleteOneLog. */
+export async function deleteOneTemplate(id: string): Promise<void> {
+  if (isWeb) {
+    await apiDeleteTemplate(id);
+    return;
+  }
+  await dbDeleteTemplate(id, true);
   pushDirty().catch(() => {});
 }
 

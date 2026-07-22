@@ -32,8 +32,28 @@ async function getDb(): Promise<SQLiteDatabase> {
     db = await SQLite.openDatabaseAsync(DB_NAME);
     await db.execAsync(PRAGMA);
     await db.execAsync(SCHEMA);
+    await migrateSchema(db);
   }
   return db;
+}
+
+/**
+ * Lightweight schema migrations for the local SQLite cache. CREATE TABLE IF NOT
+ * EXISTS only runs on first creation — existing installs keep the old columns.
+ * This adds new columns idempotently (ALTER TABLE ... ADD COLUMN fails silently
+ * if the column already exists, caught per-statement).
+ */
+async function migrateSchema(database: SQLiteDatabase): Promise<void> {
+  const addColumnIfMissing = async (table: string, column: string, def: string) => {
+    try {
+      await database.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${def};`);
+    } catch {
+      // column already exists — expected on subsequent runs
+    }
+  };
+  // 0004: templates get archived + deleted_at
+  await addColumnIfMissing('templates', 'archived', 'INTEGER NOT NULL DEFAULT 0');
+  await addColumnIfMissing('templates', 'deleted_at', 'TEXT');
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -63,8 +83,10 @@ CREATE TABLE IF NOT EXISTS templates (
   name TEXT NOT NULL,
   blocks TEXT NOT NULL DEFAULT '[]',
   alarm_minutes INTEGER,
+  archived INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  deleted_at TEXT,
   dirty INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS logs (
@@ -201,14 +223,16 @@ export async function dbLoadTemplates(): Promise<WorkoutTemplate[]> {
       name: string;
       blocks: string;
       alarm_minutes: number | null;
+      archived: number;
       created_at: string;
       updated_at: string;
-    }>('SELECT * FROM templates ORDER BY created_at ASC');
+    }>('SELECT * FROM templates WHERE deleted_at IS NULL ORDER BY created_at DESC');
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
       blocks: JSON.parse(r.blocks || '[]') as WorkoutBlock[],
       alarmMinutes: r.alarm_minutes ?? undefined,
+      archived: bool(r.archived),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     }));
@@ -218,27 +242,37 @@ export async function dbLoadTemplates(): Promise<WorkoutTemplate[]> {
 export async function dbUpsertTemplate(tpl: WorkoutTemplate, dirty = true): Promise<void> {
   await tx(async (db) => {
     await db.runAsync(
-      `INSERT INTO templates (id, name, blocks, alarm_minutes, created_at, updated_at, dirty)
-       VALUES (?,?,?,?,?,?,?)
+      `INSERT INTO templates (id, name, blocks, alarm_minutes, archived, created_at, updated_at, deleted_at, dirty)
+       VALUES (?,?,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, blocks=excluded.blocks, alarm_minutes=excluded.alarm_minutes,
-         updated_at=excluded.updated_at, dirty = excluded.dirty`,
+         archived=excluded.archived, updated_at=excluded.updated_at,
+         deleted_at=excluded.deleted_at, dirty = excluded.dirty`,
       [
         tpl.id,
         tpl.name,
         JSON.stringify(tpl.blocks),
         tpl.alarmMinutes ?? null,
+        tpl.archived ? 1 : 0,
         tpl.createdAt,
         tpl.updatedAt,
+        null,
         dirty ? 1 : 0,
       ],
     );
   });
 }
 
-export async function dbDeleteTemplate(id: string): Promise<void> {
+export async function dbDeleteTemplate(id: string, soft = true): Promise<void> {
   await tx(async (db) => {
-    await db.runAsync('DELETE FROM templates WHERE id = ?', [id]);
+    if (soft) {
+      await db.runAsync(
+        `UPDATE templates SET deleted_at = ?, dirty = 1 WHERE id = ?`,
+        [new Date().toISOString(), id],
+      );
+    } else {
+      await db.runAsync('DELETE FROM templates WHERE id = ?', [id]);
+    }
   });
 }
 
@@ -366,15 +400,28 @@ export async function clearDirtyExercise(id: string): Promise<void> {
 
 export async function getDirtyTemplates(): Promise<WorkoutTemplate[]> {
   return tx(async (db) => {
-    const rows = await db.getAllAsync<any>('SELECT * FROM templates WHERE dirty = 1');
+    const rows = await db.getAllAsync<any>(
+      'SELECT * FROM templates WHERE dirty = 1 AND deleted_at IS NULL',
+    );
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
       blocks: JSON.parse(r.blocks || '[]'),
       alarmMinutes: r.alarm_minutes ?? undefined,
+      archived: bool(r.archived),
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     })) as WorkoutTemplate[];
+  });
+}
+
+/** IDs of templates that were soft-deleted locally and still need to be pushed. */
+export async function getDirtyDeletedTemplateIds(): Promise<string[]> {
+  return tx(async (db) => {
+    const rows = await db.getAllAsync<any>(
+      'SELECT id FROM templates WHERE dirty = 1 AND deleted_at IS NOT NULL',
+    );
+    return rows.map((r) => r.id as string);
   });
 }
 export async function clearDirtyTemplate(id: string): Promise<void> {

@@ -24,8 +24,10 @@ type TemplateRow = {
   id: string;
   name: string;
   alarm_minutes: number | null;
+  archived: boolean | null;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
   workout_blocks: BlockRow[];
 };
 type BlockRow = {
@@ -87,6 +89,7 @@ export function templateFromRow(r: TemplateRow): WorkoutTemplate {
     name: r.name,
     blocks,
     alarmMinutes: r.alarm_minutes ?? undefined,
+    archived: r.archived ?? false,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -174,15 +177,18 @@ export async function apiDeleteExercise(id: string): Promise<void> {
 }
 
 // ── Templates (with nested blocks/items) ───────────────────────────────────────
-export async function apiPullTemplates(since: string | null): Promise<WorkoutTemplate[]> {
+export async function apiPullTemplates(since: string | null): Promise<{ templates: WorkoutTemplate[]; deletedIds: string[] }> {
   let q = supabase
     .from('workout_templates')
     .select('*, workout_blocks(*, workout_items(*))')
-    .order('updated_at', { ascending: true });
+    .order('created_at', { ascending: false });
   if (since) q = q.gt('updated_at', since);
   const { data, error } = await q;
   if (error) throw error;
-  return (data as TemplateRow[]).map(templateFromRow);
+  const rows = data as TemplateRow[];
+  const templates = rows.filter((r) => !r.deleted_at).map(templateFromRow);
+  const deletedIds = rows.filter((r) => !!r.deleted_at).map((r) => r.id);
+  return { templates, deletedIds };
 }
 
 export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
@@ -191,6 +197,7 @@ export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
       id: tpl.id,
       name: tpl.name,
       alarm_minutes: tpl.alarmMinutes ?? null,
+      archived: tpl.archived ?? false,
       created_at: tpl.createdAt,
       updated_at: tpl.updatedAt,
     },
@@ -245,8 +252,11 @@ export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
 }
 
 export async function apiDeleteTemplate(id: string): Promise<void> {
-  // ON DELETE CASCADE removes blocks/items server-side.
-  const { error } = await supabase.from('workout_templates').delete().eq('id', id);
+  // Soft delete so other devices learn about it via pull (mirrors logs).
+  const { error } = await supabase
+    .from('workout_templates')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', id);
   if (error) throw error;
 }
 

@@ -33,6 +33,7 @@ import {
   clearDirtyExercise,
   getDirtyTemplates,
   clearDirtyTemplate,
+  getDirtyDeletedTemplateIds,
   getDirtyLogs,
   clearDirtyLog,
   getDirtyDeletedLogIds,
@@ -79,13 +80,22 @@ export async function pushDirty(): Promise<void> {
         console.warn('push exercise failed', ex.id, e);
       }
     }
-    // Templates
+    // Templates (upserts — excludes soft-deleted rows)
     for (const tpl of await getDirtyTemplates()) {
       try {
         await apiUpsertTemplate(tpl);
         await clearDirtyTemplate(tpl.id);
       } catch (e) {
         console.warn('push template failed', tpl.id, e);
+      }
+    }
+    // Templates (soft-deletes — propagate to server, then hard-delete locally)
+    for (const id of await getDirtyDeletedTemplateIds()) {
+      try {
+        await apiDeleteTemplate(id);
+        await dbDeleteTemplate(id, false);
+      } catch (e) {
+        console.warn('push template delete failed', id, e);
       }
     }
     // Logs (upserts — excludes soft-deleted rows)
@@ -140,8 +150,9 @@ export async function pullAll(): Promise<void> {
     const remoteExercises = await apiPullExercises(since);
     for (const ex of remoteExercises) await dbUpsertExercise(ex, false);
 
-    const remoteTemplates = await apiPullTemplates(since);
+    const { templates: remoteTemplates, deletedIds: deletedTemplateIds } = await apiPullTemplates(since);
     for (const tpl of remoteTemplates) await dbUpsertTemplate(tpl, false);
+    for (const id of deletedTemplateIds) await dbDeleteTemplate(id, false);
 
     const { logs, deletedIds } = await apiPullLogs(since);
     for (const log of logs) await dbUpsertLog(log, false);
