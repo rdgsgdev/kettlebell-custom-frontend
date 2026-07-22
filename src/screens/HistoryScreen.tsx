@@ -105,7 +105,6 @@ export interface WeeklyTonnage {
 
 const TONNAGE_WEEKS = 12;
 const PLATEAU_THRESHOLD_WEEKS = 3; // flat-or-declining run that counts as a plateau
-const TREND_WINDOW = 8; // trailing weeks used to compute the trend slope
 
 /**
  * Buckets workout logs into the last `TONNAGE_WEEKS` ISO weeks and sums the
@@ -113,9 +112,13 @@ const TREND_WINDOW = 8; // trailing weeks used to compute the trend slope
  * and are excluded) — this is the progressive-overload signal. Bodyweight work
  * is intentionally not part of this metric.
  *
- * Trend is the linear-regression slope of the trailing TREND_WINDOW weeks,
- * expressed as % change per week relative to the window mean. A run of ≥3
- * consecutive flat-or-declining active weeks is flagged as a plateau.
+ * Trend compares the average weekly tonnage of the last 4 COMPLETE weeks
+ * (the current, in-progress week is excluded) against the average of the 4
+ * weeks before that. This avoids the incomplete-week problem and is stable
+ * enough that a single deload/busy week doesn't flip the badge.
+ *
+ * A run of ≥3 consecutive flat-or-declining active weeks is flagged as a
+ * plateau (bars tinted amber).
  */
 function getWeeklyTonnage(logs: WorkoutLog[]): WeeklyTonnage {
   const today = new Date();
@@ -164,42 +167,51 @@ function getWeeklyTonnage(logs: WorkoutLog[]): WeeklyTonnage {
     }
   }
 
-  // Trend: least-squares slope over the trailing TREND_WINDOW weeks, as % of
-  // the window mean. Needs ≥2 active weeks to be meaningful.
-  const winStart = Math.max(0, values.length - TREND_WINDOW);
-  const winIdx = [];
-  const winVal = [];
-  for (let i = winStart; i < values.length; i++) {
-    if (values[i] > 0) { winIdx.push(i - winStart); winVal.push(values[i]); }
-  }
+  // Trend: compare the average weekly tonnage of the last 4 COMPLETE weeks
+  // (excluding the current, still-in-progress week) against the average of the
+  // 4 weeks before that. This avoids the incomplete-week problem (the current
+  // week is shown as a bar but never counts toward the trend) and is stable
+  // enough that a single deload/busy week doesn't flip the badge.
+  //
+  //   recentAvg    = mean(weeks[-5..-2])   ← the 4 most recent complete weeks
+  //   previousAvg  = mean(weeks[-9..-6])   ← the 4 weeks before that
+  //   trendPct     = (recentAvg - previousAvg) / previousAvg × 100
+  const RECENT_HALF = 4; // weeks in each half of the comparison
+  // values[-1] is the current (incomplete) week — skip it. The comparison uses
+  // complete weeks only.
+  const recentEnd = values.length - 2;   // last complete week index
+  const recentStart = recentEnd - RECENT_HALF + 1;
+  const previousEnd = recentStart - 1;
+  const previousStart = previousEnd - RECENT_HALF + 1;
+
+  const recentSlice = values.slice(recentStart, recentEnd + 1);
+  const previousSlice = previousStart >= 0 ? values.slice(previousStart, previousEnd + 1) : [];
+
+  // Only compute a trend if we have at least 1 active week in each half.
+  const recentActive = recentSlice.filter((v) => v > 0);
+  const previousActive = previousSlice.filter((v) => v > 0);
 
   let trend: TonnageTrend = 'insufficient';
   let trendPct = 0;
-  if (winVal.length >= 2) {
-    const n = winVal.length;
-    const meanX = winIdx.reduce((s, v) => s + v, 0) / n;
-    const meanY = winVal.reduce((s, v) => s + v, 0) / n;
-    let num = 0, den = 0;
-    for (let k = 0; k < n; k++) {
-      num += (winIdx[k] - meanX) * (winVal[k] - meanY);
-      den += (winIdx[k] - meanX) ** 2;
-    }
-    const slopePerWeek = den > 0 ? num / den : 0; // kg per week
-    trendPct = meanY > 0 ? (slopePerWeek / meanY) * 100 : 0; // % per week
+  if (recentActive.length >= 1 && previousActive.length >= 1) {
+    const recentAvg = recentActive.reduce((s, v) => s + v, 0) / recentActive.length;
+    const previousAvg = previousActive.reduce((s, v) => s + v, 0) / previousActive.length;
+    trendPct = previousAvg > 0 ? ((recentAvg - previousAvg) / previousAvg) * 100 : 0;
 
-    // Count consecutive flat/declining weeks at the tail for the stagnation label.
-    let flatTail = 0;
-    for (let i = values.length - 1; i > 0; i--) {
-      if (values[i] > 0 && values[i] <= values[i - 1]) flatTail++;
-      else break;
-    }
-
-    if (trendPct >= 3) trend = 'progressing';
-    else if (trendPct <= -3) trend = 'regressing';
+    if (trendPct >= 5) trend = 'progressing';
+    else if (trendPct <= -5) trend = 'regressing';
     else trend = 'stagnating';
 
-    // For stagnation, report the flat-week count instead of a tiny %.
-    if (trend === 'stagnating') trendPct = Math.max(flatTail, PLATEAU_THRESHOLD_WEEKS);
+    // For stagnation, count consecutive flat/declining COMPLETE weeks at the
+    // tail (working backwards from the last complete week, not the current one).
+    if (trend === 'stagnating') {
+      let flatTail = 0;
+      for (let i = recentEnd; i > 0; i--) {
+        if (values[i] > 0 && values[i] <= values[i - 1]) flatTail++;
+        else break;
+      }
+      trendPct = Math.max(flatTail, 1);
+    }
   }
 
   return {
