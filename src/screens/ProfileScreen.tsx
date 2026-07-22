@@ -13,8 +13,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
-import { Spacing, Radius, Typography } from '../theme';
+import { Colors, Spacing, Radius, Typography } from '../theme';
 import SettingsScreen from './SettingsScreen';
+import CoachChat from '../components/coach/CoachChat';
 
 const GOALS = [
   { id: 'weight_loss', label: 'Lose weight', icon: 'trending-down-outline' as const },
@@ -28,7 +29,8 @@ const GOALS = [
 export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
-  const { top } = useSafeAreaInsets();
+  const [showCoach, setShowCoach] = useState(false);
+  const { top, bottom } = useSafeAreaInsets();
 
   const toggleGoal = (id: string) => {
     const goals = profile.goals.includes(id)
@@ -175,9 +177,27 @@ export default function ProfileScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* AI Coach FAB — bottom-right, clears the tab bar */}
+      <TouchableOpacity
+        style={[
+          styles.fab,
+          {
+            backgroundColor: colors.accent,
+            shadowColor: colors.accent,
+            bottom: Spacing.xl + (bottom || 8),
+          },
+        ]}
+        onPress={() => setShowCoach(true)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="chatbubble-ellipses-outline" size={24} color="#fff" />
+      </TouchableOpacity>
+
       <Modal visible={showSettings} animationType="slide" onRequestClose={() => setShowSettings(false)}>
         <SettingsScreen onClose={() => setShowSettings(false)} />
       </Modal>
+
+      <CoachChat visible={showCoach} onClose={() => setShowCoach(false)} />
     </View>
   );
 }
@@ -245,4 +265,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   goalLabel: { ...Typography.captionBold },
+  fab: {
+    position: 'absolute',
+    right: Spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    elevation: 10,
+  },
 });
