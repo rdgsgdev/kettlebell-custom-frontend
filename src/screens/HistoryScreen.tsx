@@ -38,11 +38,22 @@ function formatTotalDuration(totalSeconds: number): string {
 
 // ─── Data helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * Returns the ISO date (YYYY-MM-DD) of the Monday of the week containing `date`,
+ * computed in LOCAL time. Uses local date-part methods throughout — mixing
+ * local getDate()/setDate() with toISOString() (UTC) shifts the day when the
+ * timestamp straddles the UTC midnight boundary (e.g. evening in the Americas),
+ * which caused workout tonnage to land in the wrong week bucket and disappear
+ * from the chart. Local-formatting keeps bucket keys consistent.
+ */
 function getMondayISO(date: Date): string {
   const d = new Date(date);
   const day = d.getDay();
   d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
-  return d.toISOString().split('T')[0];
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
 }
 
 function logVolume(log: WorkoutLog): number {
