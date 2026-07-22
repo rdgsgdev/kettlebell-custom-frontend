@@ -24,7 +24,7 @@ import { isSameDay } from '../utils/helpers';
 
 function formatVolume(v: number): string {
   if (v === 0) return '—';
-  return `${Math.round(v)}`;
+  return Math.round(v).toLocaleString('en-US');
 }
 
 function formatTotalDuration(totalSeconds: number): string {
@@ -56,6 +56,10 @@ function getMondayISO(date: Date): string {
   return `${y}-${m}-${dd}`;
 }
 
+/** @deprecated Use logTonnage — sums reps × kg. logVolume only summed bell
+ *  weight per set (ignoring reps), which understated total work and didn't
+ *  match the weekly-tonnage chart. Kept temporarily in case other code
+ *  referenced it; new code should use logTonnage. */
 function logVolume(log: WorkoutLog): number {
   return log.itemLogs
     .filter((i) => i.completed && i.weight > 0)
@@ -553,7 +557,9 @@ export default function HistoryScreen() {
     return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 > 0 ? ` ${m % 60}m` : ''}`;
   }, [logs]);
 
-  const totalVol = useMemo(() => logs.reduce((s, l) => s + logVolume(l), 0), [logs]);
+  // Total tonnage across all logs — matches the weekly-tonnage chart's metric
+  // (reps × kg), not the old logVolume which only summed bell weight per set.
+  const totalVol = useMemo(() => logs.reduce((s, l) => s + logTonnage(l), 0), [logs]);
   const totalDurStr = useMemo(
     () => formatTotalDuration(logs.reduce((s, l) => s + l.totalDurationSeconds, 0)),
     [logs],
@@ -635,7 +641,7 @@ export default function HistoryScreen() {
               />
               <StatCard
                 value={formatVolume(totalVol)}
-                label="Total kg"
+                label="Total tonnage (kg)"
                 icon="barbell-outline"
               />
             </View>
