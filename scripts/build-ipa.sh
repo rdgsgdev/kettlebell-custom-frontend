@@ -77,8 +77,15 @@ EOF
 fi
 
 # ── 2. Pods ───────────────────────────────────────────────────────────────────
-if [[ ! -f "ios/Podfile.lock" ]] || [[ "ios/Podfile" -nt "ios/Podfile.lock" ]]; then
-  echo "▶ Installing CocoaPods..."
+# Reinstall pods if Podfile.lock is missing, Podfile changed, OR package.json
+# changed (new npm deps with native code — e.g. expo-clipboard — won't be in
+# the Pods project until pod install runs, and a missing native module crashes
+# the app on launch).
+if [[ ! -f "ios/Podfile.lock" ]] \
+  || [[ "ios/Podfile" -nt "ios/Podfile.lock" ]] \
+  || [[ "package.json" -nt "ios/Podfile.lock" ]] \
+  || [[ "package-lock.json" -nt "ios/Podfile.lock" ]]; then
+  echo "▶ Installing CocoaPods (dependencies changed)..."
   (cd ios && pod install)
   echo ""
 fi
