@@ -36,6 +36,10 @@ const AppContext = createContext<AppContextValue | null>(null);
 const sortByStartedAtDesc = (logs: WorkoutLog[]) =>
   [...logs].sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
 
+// Templates sorted newest-first by createdAt (newest workouts on top).
+const sortByCreatedAtDesc = (templates: WorkoutTemplate[]) =>
+  [...templates].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [templates, setTemplates] = useState<WorkoutTemplate[]>([]);
   const [logs, setLogs] = useState<WorkoutLog[]>([]);
@@ -51,7 +55,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Storage.getActiveWorkoutIds(),
       Storage.loadExercises(),
     ]);
-    setTemplates(t);
+    setTemplates(sortByCreatedAtDesc(t));
     setLogs(sortByStartedAtDesc(l));
     setActiveWorkoutIds(a);
     setExercises(e);
@@ -66,22 +70,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const saveTemplate = useCallback(
     async (template: WorkoutTemplate) => {
-      const updated = templates.some((t) => t.id === template.id)
-        ? templates.map((t) => (t.id === template.id ? template : t))
-        : [...templates, template];
-      setTemplates(updated);
-      await Storage.saveTemplates(updated);
+      // Optimistic update + single-row write (avoids the replace-all diff that
+      // could un-delete templates soft-deleted elsewhere).
+      setTemplates((prev) =>
+        sortByCreatedAtDesc(
+          prev.some((t) => t.id === template.id)
+            ? prev.map((t) => (t.id === template.id ? template : t))
+            : [...prev, template],
+        ),
+      );
+      await Storage.saveOneTemplate(template);
     },
-    [templates],
+    [],
   );
 
   const deleteTemplate = useCallback(
     async (id: string) => {
-      const updated = templates.filter((t) => t.id !== id);
-      setTemplates(updated);
-      await Storage.saveTemplates(updated);
+      setTemplates((prev) => prev.filter((t) => t.id !== id));
+      await Storage.deleteOneTemplate(id);
     },
-    [templates],
+    [],
   );
 
   const saveLog = useCallback(

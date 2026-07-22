@@ -14,11 +14,13 @@ interface Props {
   onDelete: () => void;
   onSelect: () => void;
   onDuplicate: () => void;
+  onToggleArchive: () => void;
 }
 
-export default function WorkoutCard({ template, isActive, onEdit, onDelete, onSelect, onDuplicate }: Props) {
+export default function WorkoutCard({ template, isActive, onEdit, onDelete, onSelect, onDuplicate, onToggleArchive }: Props) {
   const { colors } = useSettings();
   const styles = makeStyles(colors);
+  const isArchived = !!template.archived;
   const summary = template.blocks
     .filter((b) => b.items.length > 0)
     .map((b) =>
@@ -31,7 +33,7 @@ export default function WorkoutCard({ template, isActive, onEdit, onDelete, onSe
   return (
     <SwipeableRow onDelete={onDelete} style={{ marginBottom: Spacing.sm }}>
       <TouchableOpacity
-        style={[styles.card, isActive && styles.cardActive]}
+        style={[styles.card, isActive && styles.cardActive, isArchived && styles.cardArchived]}
         onPress={onEdit}
         activeOpacity={0.8}
       >
@@ -43,9 +45,20 @@ export default function WorkoutCard({ template, isActive, onEdit, onDelete, onSe
             {template.name}
           </Text>
           <TouchableOpacity
+            onPress={onToggleArchive}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            style={styles.iconBtn}
+          >
+            <Ionicons
+              name={isArchived ? 'archive-outline' : 'cube-outline'}
+              size={14}
+              color={colors.textTertiary}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
             onPress={onDuplicate}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            style={styles.duplicateBtn}
+            style={styles.iconBtn}
           >
             <Ionicons name="copy-outline" size={14} color={colors.textTertiary} />
           </TouchableOpacity>
@@ -104,6 +117,9 @@ function makeStyles(c: typeof Colors) {
       borderColor: c.accent,
       backgroundColor: c.surfaceElevated,
     },
+    cardArchived: {
+      opacity: 0.55,
+    },
     content: {
       flex: 1,
     },
@@ -119,6 +135,9 @@ function makeStyles(c: typeof Colors) {
       flex: 1,
     },
     duplicateBtn: {
+      padding: 4,
+    },
+    iconBtn: {
       padding: 4,
     },
     summary: {

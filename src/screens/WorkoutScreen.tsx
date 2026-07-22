@@ -24,6 +24,10 @@ export default function WorkoutScreen() {
   const { colors } = useSettings();
   const styles = makeStyles(colors);
   const [editingTemplate, setEditingTemplate] = useState<WorkoutTemplate | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const activeTemplates = templates.filter((t) => !t.archived);
+  const archivedTemplates = templates.filter((t) => t.archived);
 
   const handleCreate = () => {
     const newTemplate: WorkoutTemplate = {
@@ -50,6 +54,16 @@ export default function WorkoutScreen() {
     if (activeWorkoutIds.includes(id)) toggleActiveWorkout(id);
   };
 
+  const handleToggleArchive = (template: WorkoutTemplate) => {
+    saveTemplate({ ...template, archived: !template.archived, updatedAt: new Date().toISOString() });
+    if (template.archived && activeWorkoutIds.includes(template.id)) {
+      // un-archiving: keep selection as-is
+    } else if (!template.archived && activeWorkoutIds.includes(template.id)) {
+      // archiving an active workout: deselect it so it doesn't run
+      toggleActiveWorkout(template.id);
+    }
+  };
+
   const handleDuplicate = (template: WorkoutTemplate) => {
     const copy: WorkoutTemplate = {
       ...template,
@@ -70,31 +84,65 @@ export default function WorkoutScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
       <View style={styles.header}>
         <Text style={[styles.title, { color: colors.textPrimary }]}>Workouts</Text>
-        <Text style={[styles.subtitle, { color: colors.textTertiary }]}>{templates.length} template{templates.length !== 1 ? 's' : ''}</Text>
+        <Text style={[styles.subtitle, { color: colors.textTertiary }]}>{activeTemplates.length} active{archivedTemplates.length > 0 ? ` · ${archivedTemplates.length} archived` : ''}</Text>
       </View>
 
       <ScrollView
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
       >
-        {templates.length === 0 ? (
+        {activeTemplates.map((t) => (
+          <WorkoutCard
+            key={t.id}
+            template={t}
+            isActive={activeWorkoutIds.includes(t.id)}
+            onEdit={() => handleEdit(t)}
+            onDelete={() => handleDelete(t.id)}
+            onSelect={() => toggleActiveWorkout(t.id)}
+            onDuplicate={() => handleDuplicate(t)}
+            onToggleArchive={() => handleToggleArchive(t)}
+          />
+        ))}
+
+        {activeTemplates.length === 0 && archivedTemplates.length === 0 && (
           <EmptyState
             icon="barbell-outline"
             title="No workouts yet"
             subtitle={'Tap the + button below\nto create your first workout'}
           />
-        ) : (
-          templates.map((t) => (
-            <WorkoutCard
-              key={t.id}
-              template={t}
-              isActive={activeWorkoutIds.includes(t.id)}
-              onEdit={() => handleEdit(t)}
-              onDelete={() => handleDelete(t.id)}
-              onSelect={() => toggleActiveWorkout(t.id)}
-              onDuplicate={() => handleDuplicate(t)}
-            />
-          ))
+        )}
+
+        {/* Collapsible archived section */}
+        {archivedTemplates.length > 0 && (
+          <View style={styles.archivedSection}>
+            <TouchableOpacity
+              style={styles.archivedHeader}
+              onPress={() => setShowArchived((v) => !v)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={showArchived ? 'chevron-down' : 'chevron-forward'}
+                size={14}
+                color={colors.textTertiary}
+              />
+              <Text style={[styles.archivedHeaderText, { color: colors.textTertiary }]}>
+                ARCHIVED ({archivedTemplates.length})
+              </Text>
+            </TouchableOpacity>
+            {showArchived &&
+              archivedTemplates.map((t) => (
+                <WorkoutCard
+                  key={t.id}
+                  template={t}
+                  isActive={activeWorkoutIds.includes(t.id)}
+                  onEdit={() => handleEdit(t)}
+                  onDelete={() => handleDelete(t.id)}
+                  onSelect={() => toggleActiveWorkout(t.id)}
+                  onDuplicate={() => handleDuplicate(t)}
+                  onToggleArchive={() => handleToggleArchive(t)}
+                />
+              ))}
+          </View>
         )}
       </ScrollView>
 
@@ -161,6 +209,20 @@ function makeStyles(c: typeof Colors) {
       shadowOpacity: 0.45,
       shadowRadius: 16,
       elevation: 10,
+    },
+    archivedSection: {
+      marginTop: Spacing.lg,
+    },
+    archivedHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: Spacing.sm,
+    },
+    archivedHeaderText: {
+      ...Typography.tiny,
+      letterSpacing: 1,
+      fontWeight: '600',
     },
   });
 }
