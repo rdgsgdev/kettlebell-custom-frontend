@@ -19,3 +19,4 @@ src/config/supabase.local.ts
 
 # OS
 .DS_Store
+build/
