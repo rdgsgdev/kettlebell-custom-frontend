@@ -16,6 +16,7 @@ import { Colors, Spacing, Typography, Radius } from '../theme';
 import { MUSCLE_LABELS } from '../utils/exercises';
 import { useSettings } from '../context/SettingsContext';
 import CalendarStrip from '../components/history/CalendarStrip';
+import FrequencyHeatmap from '../components/history/FrequencyHeatmap';
 import LogCard from '../components/history/LogCard';
 import EmptyState from '../components/common/EmptyState';
 import { isSameDay } from '../utils/helpers';
@@ -542,11 +543,12 @@ function makeStatStyles(c: typeof Colors) {
 }
 
 export default function HistoryScreen() {
-  const { logs, deleteLog, updateLog, exercises } = useAppContext();
+  const { logs, deleteLog, updateLog, exercises, templates } = useAppContext();
   const { colors } = useSettings();
   const styles = makeStyles(colors);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [muscleFilter, setMuscleFilter] = useState<'week' | 'month'>('month');
+  const [heatmapTemplateId, setHeatmapTemplateId] = useState<string | null>(null);
 
   const workoutDates = logs.map((l) => l.startedAt);
   const filteredLogs = selectedDate
@@ -590,6 +592,59 @@ export default function HistoryScreen() {
     () => getMuscleCounts(muscleFilteredLogs, exercises),
     [muscleFilteredLogs, exercises],
   );
+
+  // ─── Frequency heatmap data ─────────────────────────────────────────────────
+  // Templates that have at least one log — these are the dropdown options.
+  const templatesWithLogs = useMemo(() => {
+    const loggedIds = new Set(logs.map((l) => l.templateId));
+    return templates.filter((t) => loggedIds.has(t.id));
+  }, [templates, logs]);
+
+  // Default to the first template with logs (or the first template overall) if
+  // the user hasn't picked one, or if the previously-picked template was deleted.
+  const effectiveHeatmapId = useMemo(() => {
+    if (heatmapTemplateId && templatesWithLogs.some((t) => t.id === heatmapTemplateId)) {
+      return heatmapTemplateId;
+    }
+    return templatesWithLogs[0]?.id ?? null;
+  }, [heatmapTemplateId, templatesWithLogs]);
+
+  // Count sessions per day for the selected template.
+  const heatmapCounts = useMemo(() => {
+    if (!effectiveHeatmapId) return {};
+    const counts: Record<string, number> = {};
+    logs.forEach((l) => {
+      if (l.templateId !== effectiveHeatmapId) return;
+      const day = new Date(l.startedAt);
+      const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+      counts[iso] = (counts[iso] || 0) + 1;
+    });
+    return counts;
+  }, [logs, effectiveHeatmapId]);
+
+  // Summary stats for the selected template.
+  const heatmapStats = useMemo(() => {
+    const sessions = Object.values(heatmapCounts);
+    const total = sessions.reduce((s, v) => s + v, 0);
+    const activeDays = sessions.filter((v) => v > 0).length;
+    const maxPerDay = sessions.length ? Math.max(...sessions) : 0;
+    // Current streak (consecutive days with ≥1 session, counting back from today).
+    const today = new Date();
+    let streak = 0;
+    for (let d = new Date(today); ; d.setDate(d.getDate() - 1)) {
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (heatmapCounts[iso]) {
+        streak++;
+      } else if (streak === 0) {
+        // Allow today to be empty (haven't done it yet today) without breaking.
+        const isToday = iso === `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        if (!isToday) break;
+      } else {
+        break;
+      }
+    }
+    return { total, activeDays, maxPerDay, streak };
+  }, [heatmapCounts]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -699,6 +754,70 @@ export default function HistoryScreen() {
                         ? 'Volume trending up — progressive overload working.'
                         : 'Total work moved per week (reps × kg).'}
                 </Text>
+              </View>
+            )}
+
+            {/* Frequency heatmap — daily session count for a selected workout */}
+            {templatesWithLogs.length > 0 && effectiveHeatmapId && (
+              <View style={[styles.chartCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={styles.chartTitleRow}>
+                  <Text style={styles.chartTitle}>FREQUENCY</Text>
+                  {/* Template selector dropdown */}
+                  {templatesWithLogs.length > 1 ? (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.heatmapSelectorScroll}>
+                      {templatesWithLogs.map((t) => (
+                        <TouchableOpacity
+                          key={t.id}
+                          onPress={() => setHeatmapTemplateId(t.id)}
+                          style={[
+                            styles.heatmapChip,
+                            t.id === effectiveHeatmapId
+                              ? { backgroundColor: colors.accentDim, borderColor: colors.accent }
+                              : { borderColor: colors.border },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.heatmapChipText,
+                              { color: t.id === effectiveHeatmapId ? colors.accent : colors.textSecondary },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {t.name}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  ) : (
+                    <Text style={[styles.noDataText, { fontSize: 11 }]}>
+                      {templatesWithLogs[0]?.name}
+                    </Text>
+                  )}
+                </View>
+
+                <FrequencyHeatmap counts={heatmapCounts} />
+
+                {/* Summary stats */}
+                <View style={styles.heatmapStatsRow}>
+                  <View style={styles.heatmapStat}>
+                    <Text style={[styles.heatmapStatValue, { color: colors.textPrimary }]}>
+                      {heatmapStats.total}
+                    </Text>
+                    <Text style={[styles.heatmapStatLabel, { color: colors.textTertiary }]}>sessions</Text>
+                  </View>
+                  <View style={styles.heatmapStat}>
+                    <Text style={[styles.heatmapStatValue, { color: colors.textPrimary }]}>
+                      {heatmapStats.streak}
+                    </Text>
+                    <Text style={[styles.heatmapStatLabel, { color: colors.textTertiary }]}>day streak</Text>
+                  </View>
+                  <View style={styles.heatmapStat}>
+                    <Text style={[styles.heatmapStatValue, { color: colors.textPrimary }]}>
+                      {heatmapStats.maxPerDay}
+                    </Text>
+                    <Text style={[styles.heatmapStatLabel, { color: colors.textTertiary }]}>max/day</Text>
+                  </View>
+                </View>
               </View>
             )}
 
@@ -823,6 +942,41 @@ function makeStyles(c: typeof Colors) {
     },
     muscleFilterText: { ...Typography.tiny, color: c.textTertiary, fontWeight: '600' },
     muscleFilterTextActive: { color: c.accent },
+
+    // Frequency heatmap
+    heatmapSelectorScroll: {
+      maxWidth: 200,
+    },
+    heatmapChip: {
+      paddingHorizontal: Spacing.sm,
+      paddingVertical: 4,
+      borderRadius: Radius.full,
+      borderWidth: 1,
+      marginRight: Spacing.xs,
+    },
+    heatmapChipText: {
+      ...Typography.tiny,
+      fontWeight: '600',
+    },
+    heatmapStatsRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-around',
+      marginTop: Spacing.md,
+      paddingTop: Spacing.md,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: c.border,
+    },
+    heatmapStat: {
+      alignItems: 'center',
+    },
+    heatmapStatValue: {
+      ...Typography.h3,
+      fontSize: 20,
+    },
+    heatmapStatLabel: {
+      ...Typography.tiny,
+      marginTop: 2,
+    },
 
     calendarWrapper: { height: 96, backgroundColor: c.background },
 
