@@ -597,7 +597,7 @@ export default function HistoryScreen() {
   // Templates that have at least one log — these are the dropdown options.
   const templatesWithLogs = useMemo(() => {
     const loggedIds = new Set(logs.map((l) => l.templateId));
-    return templates.filter((t) => loggedIds.has(t.id));
+    return templates.filter((t) => loggedIds.has(t.id) && !t.archived);
   }, [templates, logs]);
 
   // Default to the first template with logs (or the first template overall) if
