@@ -10,7 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
 import { Colors, Spacing, Radius, Typography } from '../theme';
@@ -30,7 +30,6 @@ export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
   const [showSettings, setShowSettings] = useState(false);
   const [showCoach, setShowCoach] = useState(false);
-  const { top } = useSafeAreaInsets();
 
   const toggleGoal = (id: string) => {
     const goals = profile.goals.includes(id)
@@ -40,13 +39,13 @@ export default function ProfileScreen() {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Header */}
-        <View style={[styles.header, { paddingTop: top + Spacing.sm, borderBottomColor: colors.border }]}>
+        {/* Header — matches the alignment of Exercises/Workouts/Progress tabs */}
+        <View style={styles.header}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>Profile</Text>
           <TouchableOpacity
             onPress={() => setShowSettings(true)}
@@ -197,7 +196,7 @@ export default function ProfileScreen() {
       </Modal>
 
       <CoachChat visible={showCoach} onClose={() => setShowCoach(false)} />
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -206,7 +205,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
