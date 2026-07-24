@@ -7,7 +7,7 @@
 // Each cell is a rounded rect. Color intensity maps to session count.
 
 import React from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Dimensions } from 'react-native';
 import Svg, { Rect, Text as SvgText } from 'react-native-svg';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { useSettings } from '../../context/SettingsContext';
