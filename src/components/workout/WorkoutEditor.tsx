@@ -209,7 +209,7 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                     </View>
                   )}
                   {block.type === 'juarez' && (
-                    <View style={[styles.emomConfig, { borderColor: `${color}44` }]}>
+                    <View style={[styles.juarezConfig, { borderColor: `${color}44` }]}>
                       <View style={styles.juarezConfigRow}>
                         <Text style={styles.emomLabel}>Starting reps</Text>
                         <NumericInput
@@ -237,9 +237,13 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                         </Text>
                       </TouchableOpacity>
                       <Text style={styles.juarezHint}>
-                        {block.juarezSuperset
-                          ? `${block.juarezStartingReps ?? 10} rounds: ex1 ${(block.juarezStartingReps ?? 10)} reps, ex2 1 rep, ex1 ${((block.juarezStartingReps ?? 10) - 1)} reps, ex2 2 reps...`
-                          : `${block.juarezStartingReps ?? 10} rounds: ${(block.juarezStartingReps ?? 10)} reps, 1 rep, ${((block.juarezStartingReps ?? 10) - 1)} reps, 2 reps...`}
+                        {(() => {
+                          const n = block.juarezStartingReps ?? 10;
+                          if (block.juarezSuperset) {
+                            return `${n} rounds: ex1 ${n} reps → ex2 1 rep → ex1 ${n - 1} reps → ex2 2 reps...`;
+                          }
+                          return `${n} rounds: ${n} reps → 1 rep → ${n - 1} reps → 2 reps...`;
+                        })()}
                       </Text>
                     </View>
                   )}
@@ -388,6 +392,18 @@ function makeStyles(c: typeof Colors) {
       paddingHorizontal: Spacing.md,
       paddingVertical: Spacing.sm,
       marginBottom: Spacing.sm,
+    },
+    // Juarez config is column-stacked (reps input row, superset toggle, hint)
+    // — NOT row like emomConfig, because it has 3 distinct rows of content.
+    juarezConfig: {
+      flexDirection: 'column',
+      backgroundColor: c.surfaceElevated,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      paddingHorizontal: Spacing.md,
+      paddingVertical: Spacing.sm,
+      marginBottom: Spacing.sm,
+      gap: Spacing.xs,
     },
     emomLabel: { ...Typography.body, color: c.textSecondary },
     emomDurationRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
