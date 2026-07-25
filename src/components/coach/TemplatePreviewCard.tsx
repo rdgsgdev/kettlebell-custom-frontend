@@ -119,6 +119,8 @@ export default function TemplatePreviewCard({
           }),
         ),
         emomMinutes: b.emomMinutes,
+        juarezStartingReps: b.juarezStartingReps,
+        juarezSuperset: b.juarezSuperset,
         customLabel: b.customLabel,
         customColor: b.customColor,
       }));
@@ -164,9 +166,15 @@ export default function TemplatePreviewCard({
                   {b.emomMinutes} min EMOM
                 </Text>
               )}
+              {b.type === 'juarez' && b.juarezStartingReps != null && (
+                <Text style={[styles.emomMeta, { color: colors.textTertiary }]}>
+                  {b.juarezStartingReps} rounds{b.juarezSuperset ? ' superset' : ''}
+                </Text>
+              )}
               {b.items.map((it, ii) => (
                 <Text key={ii} style={[styles.itemText, { color: colors.textSecondary }]}>
-                  {it.exerciseName} · {it.reps}r{it.sets ? `×${it.sets}` : ''}
+                  {it.exerciseName}
+                  {b.type !== 'juarez' ? ` · ${it.reps}r${it.sets ? `×${it.sets}` : ''}` : ''}
                   {it.weight ? ` @${it.weight}kg` : ''}
                 </Text>
               ))}

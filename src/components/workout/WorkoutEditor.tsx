@@ -42,9 +42,11 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
   const addBlockFromDef = (def: CustomBlockDef) => {
     const newBlock: WorkoutBlock = {
       id: generateId(),
-      type: def.baseType === 'emom' ? 'emom' : 'starter',
+      type: def.baseType === 'emom' ? 'emom' : def.baseType === 'juarez' ? 'juarez' : 'starter',
       items: [],
       emomMinutes: def.baseType === 'emom' ? 20 : undefined,
+      juarezStartingReps: def.baseType === 'juarez' ? 10 : undefined,
+      juarezSuperset: def.baseType === 'juarez' ? false : undefined,
       customBlockDefId: def.id,
       customLabel: def.label,
       customColor: def.color,
@@ -69,6 +71,9 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
 
   const updateBlockEmomMinutes = (id: string, n: number) =>
     updateBlocks(draft.blocks.map((b) => (b.id === id ? { ...b, emomMinutes: n } : b)));
+
+  const updateBlockJuarezConfig = (id: string, patch: Partial<Pick<WorkoutBlock, 'juarezStartingReps' | 'juarezSuperset'>>) =>
+    updateBlocks(draft.blocks.map((b) => (b.id === id ? { ...b, ...patch } : b)));
 
   const alarmEnabled = draft.alarmMinutes !== undefined;
 
@@ -182,6 +187,8 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                   accentColor={color}
                   items={block.items}
                   showRestTime={block.type !== 'emom'}
+                  repsEditable={block.type !== 'juarez'}
+                  maxItems={block.type === 'juarez' ? (block.juarezSuperset ? 2 : 1) : undefined}
                   onChange={(items) => updateBlockItems(block.id, items)}
                   onScrollLock={setScrollEnabled}
                 >
@@ -199,6 +206,41 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                         />
                         <Text style={styles.emomUnit}>min</Text>
                       </View>
+                    </View>
+                  )}
+                  {block.type === 'juarez' && (
+                    <View style={[styles.emomConfig, { borderColor: `${color}44` }]}>
+                      <View style={styles.juarezConfigRow}>
+                        <Text style={styles.emomLabel}>Starting reps</Text>
+                        <NumericInput
+                          style={[styles.emomDurationInput, { color, borderColor: `${color}88`, width: 60 }]}
+                          value={block.juarezStartingReps ?? 10}
+                          onCommit={(n) => updateBlockJuarezConfig(block.id, { juarezStartingReps: n })}
+                          min={2}
+                          returnKeyType="done"
+                          selectTextOnFocus
+                        />
+                        <Text style={styles.emomUnit}>reps</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.juarezSupersetToggle}
+                        onPress={() => updateBlockJuarezConfig(block.id, { juarezSuperset: !block.juarezSuperset })}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={block.juarezSuperset ? 'checkbox' : 'square-outline'}
+                          size={18}
+                          color={color}
+                        />
+                        <Text style={[styles.juarezSupersetLabel, { color: colors.textSecondary }]}>
+                          Superset (2 exercises)
+                        </Text>
+                      </TouchableOpacity>
+                      <Text style={styles.juarezHint}>
+                        {block.juarezSuperset
+                          ? `${block.juarezStartingReps ?? 10} rounds: ex1 ${(block.juarezStartingReps ?? 10)} reps, ex2 1 rep, ex1 ${((block.juarezStartingReps ?? 10) - 1)} reps, ex2 2 reps...`
+                          : `${block.juarezStartingReps ?? 10} rounds: ${(block.juarezStartingReps ?? 10)} reps, 1 rep, ${((block.juarezStartingReps ?? 10) - 1)} reps, 2 reps...`}
+                      </Text>
                     </View>
                   )}
                 </BlockSection>
@@ -360,6 +402,24 @@ function makeStyles(c: typeof Colors) {
       textAlign: 'center',
     },
     emomUnit: { ...Typography.body, color: c.textTertiary },
+    juarezConfigRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.xs,
+      marginBottom: Spacing.sm,
+    },
+    juarezSupersetToggle: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.xs,
+      marginBottom: Spacing.xs,
+    },
+    juarezSupersetLabel: { ...Typography.caption },
+    juarezHint: {
+      ...Typography.tiny,
+      color: c.textTertiary,
+      fontStyle: 'italic',
+    },
     addBlockBtn: {
       flexDirection: 'row',
       alignItems: 'center',

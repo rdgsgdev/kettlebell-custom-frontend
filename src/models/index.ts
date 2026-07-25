@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type RepMode = 'bilateral' | 'unilateral' | 'unilateral-fr';
-export type BlockType = 'starter' | 'emom' | 'finisher' | 'mobility' | 'stretching';
+export type BlockType = 'starter' | 'emom' | 'finisher' | 'mobility' | 'stretching' | 'juarez';
 
 // ─── Settings & Profile ───────────────────────────────────────────────────────
 
@@ -13,7 +13,8 @@ export interface CustomBlockDef {
   id: string;
   label: string;
   color: string;
-  baseType: 'standard' | 'emom'; // standard = sets/reps/rest; emom = interval
+  baseType: 'standard' | 'emom' | 'juarez';
+  // standard = sets/reps/rest; emom = interval; juarez = Juarez Valley pyramid
 }
 
 export interface AppSettings {
@@ -40,6 +41,7 @@ export const DEFAULT_BLOCK_DEFS: CustomBlockDef[] = [
   { id: 'cbd-main', label: 'Main', color: '#FF6B35', baseType: 'standard' },
   { id: 'cbd-finisher', label: 'Finisher', color: '#A78BFA', baseType: 'standard' },
   { id: 'cbd-emom', label: 'EMOM', color: '#FBBF24', baseType: 'emom' },
+  { id: 'cbd-juarez', label: 'Juarez Valley', color: '#2DD4BF', baseType: 'juarez' },
 ];
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -109,6 +111,8 @@ export interface WorkoutBlock {
   type: BlockType;
   items: WorkoutItem[];
   emomMinutes?: number;      // only for type === 'emom'
+  juarezStartingReps?: number; // only for type === 'juarez' — the starting rep count N
+  juarezSuperset?: boolean;    // only for type === 'juarez' — true = 2 exercises alternate
   customBlockDefId?: string; // ID of CustomBlockDef used to create this block
   customLabel?: string;      // display label override
   customColor?: string;      // display color override
@@ -141,6 +145,7 @@ export interface ItemLog {
   completed: boolean;
   skipped?: boolean;
   emomMinute?: number; // only for EMOM items
+  juarezRound?: number; // only for Juarez Valley items — 1-indexed round number
 }
 
 export interface WorkoutLog {

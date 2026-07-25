@@ -18,12 +18,44 @@ import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
 import { WorkoutItem, WorkoutLog, ItemLog } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
-import { generateId, formatDuration, blockDim, getBlockDisplayColor, getBlockDisplayLabel } from '../utils/helpers';
+import { generateId, formatDuration, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, juarezTotalRounds } from '../utils/helpers';
 import { scheduleAlarm, cancelAlarm } from '../utils/notifications';
 import NumericInput from '../components/common/NumericInput';
 import ExerciseDetailModal from '../components/exercises/ExerciseDetailModal';
 
 type Phase = 'idle' | 'exercise' | 'rest' | 'emom' | 'done' | 'stopped';
+
+/**
+ * Total execution steps for a Juarez Valley block. For single-exercise blocks,
+ * that's `startingReps` rounds. For superset blocks, each round has 2 steps
+ * (exercise 1 + exercise 2), so it's `startingReps * 2`.
+ */
+function juarezStepCount(block: { juarezStartingReps?: number; juarezSuperset?: boolean }): number {
+  const reps = block.juarezStartingReps ?? 10;
+  return reps * (block.juarezSuperset ? 2 : 1);
+}
+
+/**
+ * For a given Juarez step index, returns the exercise item index (0 or 1) and
+ * the computed rep count for that step.
+ *
+ * Single exercise: step `i` maps to round `i`, exercise 0, reps = juarezRepsForRound(i).
+ * Superset: even steps = exercise 0 (high count), odd steps = exercise 1 (low count).
+ *   Each pair of steps = one round. Step `i` → round `Math.floor(i / 2)`,
+ *   exercise `i % 2`, reps from juarezRepsForRound(round, startingReps).
+ */
+function juarezStepInfo(
+  step: number,
+  block: { juarezStartingReps?: number; juarezSuperset?: boolean },
+): { itemIdx: number; reps: number; round: number } {
+  const reps = block.juarezStartingReps ?? 10;
+  if (block.juarezSuperset) {
+    const round = Math.floor(step / 2);
+    const itemIdx = step % 2;
+    return { itemIdx, reps: juarezRepsForRound(round, reps), round };
+  }
+  return { itemIdx: 0, reps: juarezRepsForRound(step, reps), round: step };
+}
 
 interface SavedState {
   phase: Phase;
@@ -306,7 +338,12 @@ export default function ExecutionScreen() {
     if (phase !== 'exercise' || !template) return;
     const currentBlock = template.blocks[blockIdx];
     if (!currentBlock) return;
-    if (manualIdx >= currentBlock.items.length) {
+    // For Juarez blocks, the step count is the virtual round count, not the
+    // number of items (which is 1 or 2).
+    const stepLimit = currentBlock.type === 'juarez'
+      ? juarezStepCount(currentBlock)
+      : currentBlock.items.length;
+    if (manualIdx >= stepLimit) {
       advanceToNextBlock();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -426,6 +463,32 @@ export default function ExecutionScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setExerciseTimerSeconds(0);
     exerciseTimerSecondsRef.current = 0;
+
+    // ── Juarez Valley: each step is one round (or one half of a superset
+    // round). No sets — every tap advances to the next step. Rest uses the
+    // first item's restTime.
+    if (currentBlock.type === 'juarez') {
+      const totalSteps = juarezStepCount(currentBlock);
+      const isLastStep = manualIdx >= totalSteps - 1;
+      // Mark this step as completed.
+      setCompletedByBlock((prev) => ({
+        ...prev,
+        [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
+      }));
+      const firstItem = currentBlock.items[0];
+      const rest = firstItem?.restTime ?? 0;
+      if (!isLastStep && rest > 0) {
+        setRestSeconds(rest);
+        setPhase('rest');
+        restTypeRef.current = 'exercises';
+        startTimer();
+      } else if (!isLastStep) {
+        setManualIdx((i) => i + 1);
+      }
+      // If isLastStep, the manualIdx watcher will advance to the next block.
+      return;
+    }
+
     const item = currentBlock.items[manualIdx];
     if (!item) return;
     const totalSets = item.sets ?? 1;
@@ -701,6 +764,34 @@ export default function ExecutionScreen() {
             emomMinute: step + 1,
           });
         }
+      } else if (block.type === 'juarez') {
+        // Expand each Juarez step into an ItemLog with computed reps. Each step
+        // maps to an exercise + a rep count from the pyramid sequence.
+        const totalSteps = juarezStepCount(block);
+        const completedIdx = completedByBlock[block.id] ?? [];
+        const skippedIdx = skippedByBlock[block.id] ?? [];
+        for (let step = 0; step < totalSteps; step++) {
+          const { itemIdx, reps, round } = juarezStepInfo(step, block);
+          const item = block.items[itemIdx];
+          if (!item) continue;
+          const key = `${block.id}-${step}`;
+          itemLogs.push({
+            id: generateId(),
+            blockId: block.id,
+            blockType: block.type,
+            customLabel: block.customLabel,
+            customColor: block.customColor,
+            exerciseName: item.exerciseName,
+            reps: actualReps[key] ?? reps,
+            repsLeft: item.repMode !== 'bilateral' ? (actualReps[`${key}-L`] ?? reps) : undefined,
+            repsRight: item.repMode !== 'bilateral' ? (actualReps[`${key}-R`] ?? reps) : undefined,
+            weight: actualWeights[key] ?? item.weight,
+            repMode: item.repMode,
+            completed: !isPartial || completedIdx.includes(step),
+            skipped: skippedIdx.includes(step),
+            juarezRound: round + 1,
+          });
+        }
       } else {
         const completedIdx = completedByBlock[block.id] ?? [];
         const skippedIdx = skippedByBlock[block.id] ?? [];
@@ -770,6 +861,13 @@ export default function ExecutionScreen() {
   const currentItem: WorkoutItem | null = (() => {
     if (!currentBlock) return null;
     if (phase === 'exercise' || phase === 'rest') {
+      // Juarez Valley: map the step index to the right exercise + override reps.
+      if (currentBlock.type === 'juarez') {
+        const { itemIdx, reps } = juarezStepInfo(manualIdx, currentBlock);
+        const baseItem = currentBlock.items[itemIdx];
+        if (!baseItem) return null;
+        return { ...baseItem, reps };
+      }
       return currentBlock.items[manualIdx] ?? null;
     }
     if (phase === 'emom') {
@@ -781,6 +879,12 @@ export default function ExecutionScreen() {
   const progressText = (() => {
     if (!currentBlock) return '';
     if (phase === 'exercise' || phase === 'rest') {
+      // Juarez Valley: show round progress instead of item/set progress.
+      if (currentBlock.type === 'juarez') {
+        const { round } = juarezStepInfo(manualIdx, currentBlock);
+        const totalRounds = juarezTotalRounds(currentBlock.juarezStartingReps ?? 10);
+        return `ROUND ${Math.min(round + 1, totalRounds)} / ${totalRounds}`;
+      }
       const item = currentBlock.items[manualIdx];
       const totalSets = item?.sets ?? 1;
       const base = `${Math.min(manualIdx + 1, currentBlock.items.length)} / ${currentBlock.items.length}`;
@@ -793,6 +897,9 @@ export default function ExecutionScreen() {
   })();
 
   const emomProgress = currentBlock?.type === 'emom' ? emomStep / (currentBlock.emomMinutes ?? 1) : 0;
+  const juarezProgress = currentBlock?.type === 'juarez'
+    ? (manualIdx + 1) / juarezStepCount(currentBlock)
+    : 0;
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Render
@@ -862,7 +969,9 @@ export default function ExecutionScreen() {
                   value={
                     block.type === 'emom'
                       ? `${block.items.length} exercises · ${block.emomMinutes} min`
-                      : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
+                      : block.type === 'juarez'
+                        ? `${block.items.length} ex · ${block.juarezStartingReps ?? 10} rounds${block.juarezSuperset ? ' superset' : ''}`
+                        : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
                   }
                   isLast={idx === arr.length - 1}
                 />
@@ -985,6 +1094,35 @@ export default function ExecutionScreen() {
                               setEmomSkippedByBlock((prev) => ({ ...prev, [block.id]: [...(prev[block.id] ?? []), step] }));
                               setEmomCompletedByBlock((prev) => ({ ...prev, [block.id]: Math.max(0, (prev[block.id] ?? 0) - 1) }));
                             }}
+                            color={bColor}
+                          />
+                        );
+                      })
+                    ) : block.type === 'juarez' ? (
+                      Array.from({ length: juarezStepCount(block) }, (_, step) => {
+                        const { itemIdx, reps, round } = juarezStepInfo(step, block);
+                        const item = block.items[itemIdx];
+                        if (!item) return null;
+                        const rowKey = `${block.id}-juarez-${step}`;
+                        const repsKey = `${block.id}-${step}`;
+                        const completed = completedByBlock[block.id] ?? [];
+                        const skipped = skippedByBlock[block.id] ?? [];
+                        const notReached = isStopped && !completed.includes(step) && !skipped.includes(step);
+                        // Override reps with the computed Juarez value for display.
+                        const displayItem = { ...item, reps };
+                        return (
+                          <CompletionExerciseRow
+                            key={rowKey} rowKey={rowKey} repsKey={repsKey} item={displayItem}
+                            label={`round ${round + 1}`}
+                            isSkipped={skipped.includes(step)}
+                            isNotReached={notReached}
+                            actualReps={actualReps} actualWeights={actualWeights}
+                            expandedKey={reviewExpandedKey}
+                            onToggle={() => setReviewExpandedKey(reviewExpandedKey === rowKey ? null : rowKey)}
+                            onChangeReps={(k, v) => setActualReps((prev) => ({ ...prev, [k]: v }))}
+                            onChangeWeight={(k, v) => setActualWeights((prev) => ({ ...prev, [k]: v }))}
+                            onUnskip={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: (prev[block.id] ?? []).filter((i) => i !== step) }))}
+                            onMarkSkipped={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: [...(prev[block.id] ?? []), step] }))}
                             color={bColor}
                           />
                         );

@@ -56,6 +56,7 @@ export function blockColor(type: BlockType): string {
     case 'finisher': return Colors.finisherColor;
     case 'mobility': return Colors.mobilityColor;
     case 'stretching': return Colors.stretchingColor;
+    case 'juarez': return Colors.mobilityColor; // teal — distinct from accent orange
   }
 }
 
@@ -66,6 +67,7 @@ export function blockDim(type: BlockType): string {
     case 'finisher': return Colors.finisherDim;
     case 'mobility': return Colors.mobilityDim;
     case 'stretching': return Colors.stretchingDim;
+    case 'juarez': return Colors.mobilityDim;
   }
 }
 
@@ -76,7 +78,29 @@ export function blockLabel(type: BlockType): string {
     case 'finisher': return 'Finisher';
     case 'mobility': return 'Mobility';
     case 'stretching': return 'Stretching';
+    case 'juarez': return 'Juarez Valley';
   }
+}
+
+/**
+ * Computes the rep count for a given Juarez Valley round.
+ *
+ * The sequence interleaves a descending count with an ascending count:
+ * for startingReps=20: 20, 1, 19, 2, 18, 3, ..., 11, 10 (20 rounds total).
+ *
+ * - Even round index (0, 2, 4...) → high (descending): startingReps - round/2
+ * - Odd round index (1, 3, 5...) → low (ascending): (round+1)/2
+ */
+export function juarezRepsForRound(round: number, startingReps: number): number {
+  if (round % 2 === 0) {
+    return startingReps - Math.floor(round / 2);
+  }
+  return Math.floor(round / 2) + 1;
+}
+
+/** Total number of rounds for a Juarez Valley block = startingReps. */
+export function juarezTotalRounds(startingReps: number): number {
+  return startingReps;
 }
 
 /** Returns the display colour respecting custom block overrides. */

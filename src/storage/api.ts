@@ -35,6 +35,8 @@ type BlockRow = {
   type: string;
   sort_order: number;
   emom_minutes: number | null;
+  juarez_starting_reps: number | null;
+  juarez_superset: boolean | null;
   custom_block_def_id: string | null;
   custom_label: string | null;
   custom_color: string | null;
@@ -74,6 +76,8 @@ function blockFromRow(r: BlockRow): WorkoutBlock {
     type: r.type as WorkoutBlock['type'],
     items,
     emomMinutes: r.emom_minutes ?? undefined,
+    juarezStartingReps: r.juarez_starting_reps ?? undefined,
+    juarezSuperset: r.juarez_superset ?? undefined,
     customBlockDefId: r.custom_block_def_id ?? undefined,
     customLabel: r.custom_label ?? undefined,
     customColor: r.custom_color ?? undefined,
@@ -221,6 +225,8 @@ export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
         type: blk.type,
         sort_order: bi,
         emom_minutes: blk.emomMinutes ?? null,
+        juarez_starting_reps: blk.juarezStartingReps ?? null,
+        juarez_superset: blk.juarezSuperset ?? null,
         custom_block_def_id: blk.customBlockDefId ?? null,
         custom_label: blk.customLabel ?? null,
         custom_color: blk.customColor ?? null,
@@ -289,6 +295,7 @@ type ItemLogRow = {
   completed: boolean;
   skipped: boolean;
   emom_minute: number | null;
+  juarez_round: number | null;
   sort_order: number;
 };
 
@@ -308,6 +315,7 @@ function itemLogFromRow(r: ItemLogRow): ItemLog {
     completed: r.completed,
     skipped: r.skipped,
     emomMinute: r.emom_minute ?? undefined,
+    juarezRound: r.juarez_round ?? undefined,
   };
 }
 
@@ -383,6 +391,7 @@ export async function apiUpsertLog(log: WorkoutLog): Promise<void> {
         completed: il.completed,
         skipped: !!il.skipped,
         emom_minute: il.emomMinute ?? null,
+        juarez_round: il.juarezRound ?? null,
         sort_order: li,
       },
       { onConflict: 'id' },

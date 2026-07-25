@@ -61,6 +61,8 @@ export interface AITemplateBlock {
     durationSeconds?: number;
   }[];
   emomMinutes?: number;
+  juarezStartingReps?: number;
+  juarezSuperset?: boolean;
   customLabel?: string;
   customColor?: string;
 }

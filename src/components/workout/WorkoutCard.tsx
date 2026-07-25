@@ -26,7 +26,9 @@ export default function WorkoutCard({ template, isActive, onEdit, onDelete, onSe
     .map((b) =>
       b.type === 'emom'
         ? `${b.items.length} ex · ${b.emomMinutes} min EMOM`
-        : `${b.items.length} ${getBlockDisplayLabel(b).toLowerCase()}`
+        : b.type === 'juarez'
+          ? `${b.items.length} ex · ${b.juarezStartingReps ?? 10}r Juarez${b.juarezSuperset ? ' superset' : ''}`
+          : `${b.items.length} ${getBlockDisplayLabel(b).toLowerCase()}`
     )
     .join('  ·  ');
 
