@@ -39,22 +39,30 @@ function juarezStepCount(block: { juarezStartingReps?: number; juarezSuperset?: 
  * For a given Juarez step index, returns the exercise item index (0 or 1) and
  * the computed rep count for that step.
  *
- * Single exercise: step `i` maps to round `i`, exercise 0, reps = juarezRepsForRound(i).
- * Superset: even steps = exercise 0 (high count), odd steps = exercise 1 (low count).
- *   Each pair of steps = one round. Step `i` → round `Math.floor(i / 2)`,
- *   exercise `i % 2`, reps from juarezRepsForRound(round, startingReps).
+ * Single exercise: step `i` maps to round `i`, exercise 0. The rep sequence is
+ * the pyramid: N, 1, N-1, 2, N-2, 3, ... (even rounds descend, odd ascend).
+ *
+ * Superset: each round has 2 steps — exercise 1 does the descending count
+ * (N, N-1, N-2...) and exercise 2 does the ascending count (1, 2, 3...).
+ *   Step 0 → round 0, ex1, N reps; step 1 → round 0, ex2, 1 rep;
+ *   step 2 → round 1, ex1, N-1 reps; step 3 → round 1, ex2, 2 reps; ...
  */
 function juarezStepInfo(
   step: number,
   block: { juarezStartingReps?: number; juarezSuperset?: boolean },
 ): { itemIdx: number; reps: number; round: number } {
-  const reps = block.juarezStartingReps ?? 10;
+  const startingReps = block.juarezStartingReps ?? 10;
   if (block.juarezSuperset) {
     const round = Math.floor(step / 2);
     const itemIdx = step % 2;
-    return { itemIdx, reps: juarezRepsForRound(round, reps), round };
+    // Exercise 1 (itemIdx 0) gets the descending count, exercise 2 (itemIdx 1)
+    // gets the ascending count. These are independent — NOT the same round
+    // value passed to juarezRepsForRound (that would give both the same count).
+    const reps = itemIdx === 0 ? startingReps - round : round + 1;
+    return { itemIdx, reps, round };
   }
-  return { itemIdx: 0, reps: juarezRepsForRound(step, reps), round: step };
+  // Single exercise: use the interleaved pyramid directly.
+  return { itemIdx: 0, reps: juarezRepsForRound(step, startingReps), round: step };
 }
 
 interface SavedState {
