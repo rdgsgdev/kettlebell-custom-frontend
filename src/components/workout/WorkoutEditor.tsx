@@ -224,7 +224,25 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                       </View>
                       <TouchableOpacity
                         style={styles.juarezSupersetToggle}
-                        onPress={() => updateBlockJuarezConfig(block.id, { juarezSuperset: !block.juarezSuperset })}
+                        onPress={() => {
+                          // Apply the superset flip AND the item trim in a single
+                          // setDraft call so they're atomic. (Two separate
+                          // updateBlocks() calls each read draft.blocks from the
+                          // same pre-update state, so the second overwrites the
+                          // first — that's why the checkbox took two taps.)
+                          const turningOff = block.juarezSuperset; // currently true → going to false
+                          updateBlocks(
+                            draft.blocks.map((b) =>
+                              b.id === block.id
+                                ? {
+                                    ...b,
+                                    juarezSuperset: !block.juarezSuperset,
+                                    items: turningOff && b.items.length > 1 ? b.items.slice(0, 1) : b.items,
+                                  }
+                                : b,
+                            ),
+                          );
+                        }}
                         activeOpacity={0.7}
                       >
                         <Ionicons
@@ -240,7 +258,10 @@ export default function WorkoutEditor({ template, onSave, onCancel }: Props) {
                         {(() => {
                           const n = block.juarezStartingReps ?? 10;
                           if (block.juarezSuperset) {
-                            return `${n} rounds: ex1 ${n} reps → ex2 1 rep → ex1 ${n - 1} reps → ex2 2 reps...`;
+                            // Superset: the two exercises alternate as a single
+                            // ladder that meets in the middle. N performances
+                            // (rounds), ex1 descending + ex2 ascending.
+                            return `${n} rounds: ex1 ${n}, ex2 1, ex1 ${n - 1}, ex2 2, ... (meet in the middle)`;
                           }
                           return `${n} rounds: ${n} reps → 1 rep → ${n - 1} reps → 2 reps...`;
                         })()}
