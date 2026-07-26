@@ -13,9 +13,15 @@ interface Props {
   accentColor: string;
   items: WorkoutItem[];
   showRestTime: boolean;
+  /** When false, the reps field is hidden on each item row (e.g. Juarez Valley,
+   *  where reps are auto-determined by the block config). Defaults to true. */
+  repsEditable?: boolean;
+  /** When set, hides the "Add Exercise" button once this many items exist
+   *  (e.g. Juarez Valley limits to 1 single or 2 superset). */
+  maxItems?: number;
   onChange: (items: WorkoutItem[]) => void;
   onScrollLock?: (locked: boolean) => void;
-  children?: React.ReactNode; // extra config slot (e.g. EMOM duration)
+  children?: React.ReactNode; // extra config slot (e.g. EMOM duration, Juarez config)
 }
 
 export default function BlockSection({
@@ -24,6 +30,8 @@ export default function BlockSection({
   accentColor,
   items,
   showRestTime,
+  repsEditable = true,
+  maxItems,
   onChange,
   onScrollLock,
   children,
@@ -113,6 +121,7 @@ export default function BlockSection({
           item={item}
           index={idx}
           showRestTime={showRestTime}
+          repsEditable={repsEditable}
           accentColor={accentColor}
           onUpdate={(patch) => updateItem(item.id, patch)}
           onDelete={() => deleteItem(item.id)}
@@ -124,14 +133,18 @@ export default function BlockSection({
         />
       ))}
 
-      <TouchableOpacity
-        onPress={addItem}
-        activeOpacity={0.7}
-        style={[styles.addBtn, { borderColor: `${accentColor}55` }]}
-      >
-        <Ionicons name="add-circle-outline" size={16} color={accentColor} />
-        <Text style={[styles.addBtnText, { color: accentColor }]}>Add Exercise</Text>
-      </TouchableOpacity>
+      {(!maxItems || localItems.length < maxItems) && (
+        <TouchableOpacity
+          onPress={addItem}
+          activeOpacity={0.7}
+          style={[styles.addBtn, { borderColor: `${accentColor}55` }]}
+        >
+          <Ionicons name="add-circle-outline" size={16} color={accentColor} />
+          <Text style={[styles.addBtnText, { color: accentColor }]}>
+            {maxItems ? `Add Exercise (${localItems.length}/${maxItems})` : 'Add Exercise'}
+          </Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }

@@ -18,12 +18,56 @@ import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
 import { WorkoutItem, WorkoutLog, ItemLog } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
-import { generateId, formatDuration, blockDim, getBlockDisplayColor, getBlockDisplayLabel } from '../utils/helpers';
+import { generateId, formatDuration, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound } from '../utils/helpers';
 import { scheduleAlarm, cancelAlarm } from '../utils/notifications';
 import NumericInput from '../components/common/NumericInput';
 import ExerciseDetailModal from '../components/exercises/ExerciseDetailModal';
 
 type Phase = 'idle' | 'exercise' | 'rest' | 'emom' | 'done' | 'stopped';
+
+/**
+ * Total execution steps (= rounds) for a Juarez Valley block. Always N, the
+ * starting rep count, for BOTH single and superset:
+ *  - Single: N interleaved performances (N, 1, N-1, 2, ...).
+ *  - Superset: the two exercises alternate as a single ladder that meets in
+ *    the middle — ex1 descends (N, N-1, ...) while ex2 ascends (1, 2, ...).
+ *    Each performance is its own round, and the block ends the moment they
+ *    meet (N=20 → 20 rounds: ... round 19 ex1 11, round 20 ex2 10 → done).
+ */
+function juarezStepCount(block: { juarezStartingReps?: number; juarezSuperset?: boolean }): number {
+  return block.juarezStartingReps ?? 10;
+}
+
+/**
+ * For a given Juarez step index, returns the exercise item index (0 or 1) and
+ * the computed rep count for that step. Each step is ONE performance = ONE
+ * round.
+ *
+ * Single exercise: step `i` → round `i`, exercise 0, reps from the interleaved
+ * pyramid N, 1, N-1, 2, ... (even steps descend, odd ascend).
+ *
+ * Superset: the two exercises alternate, each performance its own round:
+ *   step 0 → ex1 N reps (round 1); step 1 → ex2 1 rep (round 2);
+ *   step 2 → ex1 N-1 reps (round 3); step 3 → ex2 2 reps (round 4); ...
+ * ex1 descends (N, N-1, ...) and ex2 ascends (1, 2, ...); they meet and the
+ * block finishes at step N-1.
+ */
+function juarezStepInfo(
+  step: number,
+  block: { juarezStartingReps?: number; juarezSuperset?: boolean },
+): { itemIdx: number; reps: number; round: number } {
+  const startingReps = block.juarezStartingReps ?? 10;
+  if (block.juarezSuperset) {
+    // Pairs of steps form one rung of the ladder: even step = ex1 (descend),
+    // odd step = ex2 (ascend). Each step is still its own round.
+    const rung = Math.floor(step / 2);
+    const itemIdx = step % 2;
+    const reps = itemIdx === 0 ? startingReps - rung : rung + 1;
+    return { itemIdx, reps, round: step };
+  }
+  // Single exercise: use the interleaved pyramid directly.
+  return { itemIdx: 0, reps: juarezRepsForRound(step, startingReps), round: step };
+}
 
 interface SavedState {
   phase: Phase;
@@ -92,6 +136,7 @@ export default function ExecutionScreen() {
   const savedStateRef = useRef<SavedState | null>(null);
   const savingRef = useRef(false);
   const [hasSaved, setHasSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const soundWarningRef = useRef<Audio.Sound | null>(null);
   const soundTickRef = useRef<Audio.Sound | null>(null);
   // Fresh-value refs for timer callback (avoids stale closures)
@@ -306,7 +351,12 @@ export default function ExecutionScreen() {
     if (phase !== 'exercise' || !template) return;
     const currentBlock = template.blocks[blockIdx];
     if (!currentBlock) return;
-    if (manualIdx >= currentBlock.items.length) {
+    // For Juarez blocks, the step count is the virtual round count, not the
+    // number of items (which is 1 or 2).
+    const stepLimit = currentBlock.type === 'juarez'
+      ? juarezStepCount(currentBlock)
+      : currentBlock.items.length;
+    if (manualIdx >= stepLimit) {
       advanceToNextBlock();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -426,6 +476,37 @@ export default function ExecutionScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     setExerciseTimerSeconds(0);
     exerciseTimerSecondsRef.current = 0;
+
+    // ── Juarez Valley: each step is one performance. No sets — every tap
+    // advances to the next step. Rest uses the first item's restTime.
+    if (currentBlock.type === 'juarez') {
+      const totalSteps = juarezStepCount(currentBlock);
+      const isLastStep = manualIdx >= totalSteps - 1;
+      // Mark this step as completed.
+      setCompletedByBlock((prev) => ({
+        ...prev,
+        [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
+      }));
+      if (isLastStep) {
+        // Last performance of the block → advance (to next block, or finish the
+        // workout if this was the last block). Done directly because we don't
+        // increment manualIdx past the limit (which is what the watcher keys on).
+        advanceToNextBlock();
+        return;
+      }
+      const firstItem = currentBlock.items[0];
+      const rest = firstItem?.restTime ?? 0;
+      if (rest > 0) {
+        setRestSeconds(rest);
+        setPhase('rest');
+        restTypeRef.current = 'exercises';
+        startTimer();
+      } else {
+        setManualIdx((i) => i + 1);
+      }
+      return;
+    }
+
     const item = currentBlock.items[manualIdx];
     if (!item) return;
     const totalSets = item.sets ?? 1;
@@ -701,6 +782,34 @@ export default function ExecutionScreen() {
             emomMinute: step + 1,
           });
         }
+      } else if (block.type === 'juarez') {
+        // Expand each Juarez performance into one ItemLog. Each step is one
+        // exercise + one rep count from the ladder/pyramid sequence.
+        const totalSteps = juarezStepCount(block);
+        const completedIdx = completedByBlock[block.id] ?? [];
+        const skippedIdx = skippedByBlock[block.id] ?? [];
+        for (let step = 0; step < totalSteps; step++) {
+          const { itemIdx, reps, round } = juarezStepInfo(step, block);
+          const item = block.items[itemIdx];
+          if (!item) continue;
+          const key = `${block.id}-${step}`;
+          itemLogs.push({
+            id: generateId(),
+            blockId: block.id,
+            blockType: block.type,
+            customLabel: block.customLabel,
+            customColor: block.customColor,
+            exerciseName: item.exerciseName,
+            reps: actualReps[key] ?? reps,
+            repsLeft: item.repMode !== 'bilateral' ? (actualReps[`${key}-L`] ?? reps) : undefined,
+            repsRight: item.repMode !== 'bilateral' ? (actualReps[`${key}-R`] ?? reps) : undefined,
+            weight: actualWeights[key] ?? item.weight,
+            repMode: item.repMode,
+            completed: !isPartial || completedIdx.includes(step),
+            skipped: skippedIdx.includes(step),
+            juarezRound: round + 1,
+          });
+        }
       } else {
         const completedIdx = completedByBlock[block.id] ?? [];
         const skippedIdx = skippedByBlock[block.id] ?? [];
@@ -739,12 +848,22 @@ export default function ExecutionScreen() {
 
     if (savingRef.current) return; // guard against double-tap duplicates
     savingRef.current = true;
+    setSaveError(null);
+    let ok = false;
     try {
       await saveLog(log);
+      ok = true;
     } catch (e) {
+      // Don't re-throw — confirmLog is an async onPress handler, so a re-throw
+      // becomes an unhandled rejection and setHasSaved(true) below never runs,
+      // leaving the button looking frozen ("does not work"). Surface the failure
+      // instead so the user can retry.
+      console.warn('saveLog failed', e);
+      setSaveError('Could not save — check your connection and try again.');
+    } finally {
       savingRef.current = false;
-      throw e;
     }
+    if (!ok) return;
     setHasSaved(true);
     savedStateRef.current = null;
     stopTimer();
@@ -770,6 +889,13 @@ export default function ExecutionScreen() {
   const currentItem: WorkoutItem | null = (() => {
     if (!currentBlock) return null;
     if (phase === 'exercise' || phase === 'rest') {
+      // Juarez Valley: map the step index to the right exercise + override reps.
+      if (currentBlock.type === 'juarez') {
+        const { itemIdx, reps } = juarezStepInfo(manualIdx, currentBlock);
+        const baseItem = currentBlock.items[itemIdx];
+        if (!baseItem) return null;
+        return { ...baseItem, reps };
+      }
       return currentBlock.items[manualIdx] ?? null;
     }
     if (phase === 'emom') {
@@ -781,6 +907,12 @@ export default function ExecutionScreen() {
   const progressText = (() => {
     if (!currentBlock) return '';
     if (phase === 'exercise' || phase === 'rest') {
+      // Juarez Valley: show round progress instead of item/set progress.
+      if (currentBlock.type === 'juarez') {
+        const totalRounds = juarezStepCount(currentBlock);
+        const roundNum = Math.min(manualIdx + 1, totalRounds);
+        return `ROUND ${roundNum} / ${totalRounds}`;
+      }
       const item = currentBlock.items[manualIdx];
       const totalSets = item?.sets ?? 1;
       const base = `${Math.min(manualIdx + 1, currentBlock.items.length)} / ${currentBlock.items.length}`;
@@ -793,6 +925,9 @@ export default function ExecutionScreen() {
   })();
 
   const emomProgress = currentBlock?.type === 'emom' ? emomStep / (currentBlock.emomMinutes ?? 1) : 0;
+  const juarezProgress = currentBlock?.type === 'juarez'
+    ? (manualIdx + 1) / juarezStepCount(currentBlock)
+    : 0;
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Render
@@ -862,7 +997,9 @@ export default function ExecutionScreen() {
                   value={
                     block.type === 'emom'
                       ? `${block.items.length} exercises · ${block.emomMinutes} min`
-                      : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
+                      : block.type === 'juarez'
+                        ? `${block.items.length} ex · ${block.juarezStartingReps ?? 10} rounds${block.juarezSuperset ? ' superset' : ''}`
+                        : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
                   }
                   isLast={idx === arr.length - 1}
                 />
@@ -989,6 +1126,35 @@ export default function ExecutionScreen() {
                           />
                         );
                       })
+                    ) : block.type === 'juarez' ? (
+                      Array.from({ length: juarezStepCount(block) }, (_, step) => {
+                        const { itemIdx, reps, round } = juarezStepInfo(step, block);
+                        const item = block.items[itemIdx];
+                        if (!item) return null;
+                        const rowKey = `${block.id}-juarez-${step}`;
+                        const repsKey = `${block.id}-${step}`;
+                        const completed = completedByBlock[block.id] ?? [];
+                        const skipped = skippedByBlock[block.id] ?? [];
+                        const notReached = isStopped && !completed.includes(step) && !skipped.includes(step);
+                        // Override reps with the computed Juarez value for display.
+                        const displayItem = { ...item, reps };
+                        return (
+                          <CompletionExerciseRow
+                            key={rowKey} rowKey={rowKey} repsKey={repsKey} item={displayItem}
+                            label={`round ${round + 1}`}
+                            isSkipped={skipped.includes(step)}
+                            isNotReached={notReached}
+                            actualReps={actualReps} actualWeights={actualWeights}
+                            expandedKey={reviewExpandedKey}
+                            onToggle={() => setReviewExpandedKey(reviewExpandedKey === rowKey ? null : rowKey)}
+                            onChangeReps={(k, v) => setActualReps((prev) => ({ ...prev, [k]: v }))}
+                            onChangeWeight={(k, v) => setActualWeights((prev) => ({ ...prev, [k]: v }))}
+                            onUnskip={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: (prev[block.id] ?? []).filter((i) => i !== step) }))}
+                            onMarkSkipped={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: [...(prev[block.id] ?? []), step] }))}
+                            color={bColor}
+                          />
+                        );
+                      })
                     ) : (
                       block.items.map((item, idx) => {
                         const key = `${block.id}-${idx}`;
@@ -1016,6 +1182,12 @@ export default function ExecutionScreen() {
                 );
               })}
             </View>
+            {saveError && !hasSaved && (
+              <View style={[styles.saveErrorBanner, { backgroundColor: colors.dangerDim }]}>
+                <Ionicons name="alert-circle-outline" size={16} color={colors.danger} />
+                <Text style={[styles.saveErrorText, { color: colors.danger }]}>{saveError}</Text>
+              </View>
+            )}
             {hasSaved ? (
               <View style={[styles.saveBtn, { backgroundColor: colors.success }]}>
                 <Ionicons name="checkmark-circle" size={18} color="#fff" />
@@ -1090,6 +1262,18 @@ export default function ExecutionScreen() {
       const totalSets = item?.sets ?? 1;
       return `Set ${manualSetIdx + 2}/${totalSets} – ${item?.exerciseName ?? ''}`;
     }
+    // Juarez Valley: "next up" is the next performance (the other exercise in
+    // a superset, or the next rung for single), or the next block when done.
+    if (currentBlock.type === 'juarez') {
+      const totalRounds = juarezStepCount(currentBlock);
+      if (manualIdx + 1 < totalRounds) {
+        const { itemIdx, reps } = juarezStepInfo(manualIdx + 1, currentBlock);
+        const nextItem = currentBlock.items[itemIdx];
+        return nextItem ? `Round ${manualIdx + 2} – ${nextItem.exerciseName} (${reps})` : `Round ${manualIdx + 2}`;
+      }
+      const nextBlock = template.blocks[blockIdx + 1];
+      return nextBlock ? getBlockDisplayLabel(nextBlock) : 'Done';
+    }
     const nextItem = currentBlock.items[manualIdx + 1];
     if (nextItem) return nextItem.exerciseName;
     const nextBlock = template.blocks[blockIdx + 1];
@@ -1097,6 +1281,11 @@ export default function ExecutionScreen() {
   })();
 
   const doneBtnLabel = (() => {
+    if (currentBlock?.type === 'juarez') {
+      const totalRounds = juarezStepCount(currentBlock);
+      const isLast = manualIdx >= totalRounds - 1;
+      return isLast ? 'Finish Round' : 'Round Done';
+    }
     const item = currentBlock?.items[manualIdx];
     const totalSets = item?.sets ?? 1;
     return totalSets > 1 ? `Set ${manualSetIdx + 1}/${totalSets} Done` : 'Exercise Done';
@@ -1230,7 +1419,7 @@ export default function ExecutionScreen() {
           </View>
 
         ) : (
-          // Starter / finisher manual
+          // Starter / finisher / juarez manual
           <View style={styles.manualView}>
             {currentItem && (
               <>
@@ -1696,6 +1885,8 @@ function makeStyles(c: typeof Colors) {
   noteInput: { backgroundColor: c.surface, borderRadius: Radius.md, borderWidth: 1, borderColor: c.border, padding: Spacing.md, ...Typography.body, color: c.textPrimary, minHeight: 80, textAlignVertical: 'top' },
   saveBtn: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: c.accent, borderRadius: Radius.full, paddingVertical: 18, shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 16, elevation: 8 },
   saveBtnText: { ...Typography.bodyBold, color: '#fff' },
+  saveErrorBanner: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderRadius: Radius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, marginBottom: Spacing.sm },
+  saveErrorText: { ...Typography.caption, flexShrink: 1 },
   resumeBtn: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, borderRadius: Radius.full, paddingVertical: 16, borderWidth: 1.5, borderColor: c.accent },
   resumeBtnText: { ...Typography.bodyBold, color: c.accent },
   discardBtn: { paddingVertical: Spacing.sm, paddingHorizontal: Spacing.lg },

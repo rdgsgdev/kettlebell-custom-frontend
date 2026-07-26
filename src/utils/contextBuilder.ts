@@ -27,6 +27,10 @@ function summarizeTemplate(t: WorkoutTemplate): string {
       const exNames = b.items.map((i) => i.exerciseName).join('/');
       return `  ${bi + 1}. ${label} EMOM ${b.emomMinutes ?? 0}min: ${exNames}`;
     }
+    if (b.type === 'juarez') {
+      const exNames = b.items.map((i) => i.exerciseName).join('/');
+      return `  ${bi + 1}. ${label} Juarez ${b.juarezStartingReps ?? 10}r${b.juarezSuperset ? ' superset' : ''}: ${exNames}`;
+    }
     const items = b.items
       .map((i) => `${i.exerciseName} ${i.reps}r${i.sets ? `×${i.sets}` : ''}${i.weight ? `@${i.weight}kg` : ''}`)
       .join(', ');

@@ -15,6 +15,9 @@ interface Props {
   item: WorkoutItem;
   index: number;
   showRestTime: boolean;
+  /** When false, the reps input field is hidden (e.g. Juarez Valley where reps
+   *  are auto-determined). Defaults to true. */
+  repsEditable?: boolean;
   accentColor: string;
   onUpdate: (patch: Partial<WorkoutItem>) => void;
   onDelete: () => void;
@@ -29,6 +32,7 @@ export default function WorkoutItemRow({
   item,
   index,
   showRestTime,
+  repsEditable = true,
   accentColor,
   onUpdate,
   onDelete,
@@ -202,8 +206,8 @@ export default function WorkoutItemRow({
 
       {expanded && (
         <View style={styles.details}>
-          {/* Exercise type: Reps or Timer — only for starter/finisher */}
-          {showRestTime && (
+          {/* Exercise type: Reps or Timer — only for blocks where reps are manual */}
+          {showRestTime && repsEditable && (
             <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Type</Text>
               <View style={styles.toggleGroup}>
@@ -269,7 +273,7 @@ export default function WorkoutItemRow({
 
           {/* Numeric fields */}
           <View style={styles.numericRow}>
-            {(item.durationSeconds ?? 0) > 0 ? (
+            {repsEditable ? ((item.durationSeconds ?? 0) > 0 ? (
               <View style={styles.numericField}>
                 <Text style={styles.fieldLabel}>Duration (s)</Text>
                 <NumericInput
@@ -308,7 +312,7 @@ export default function WorkoutItemRow({
                   </View>
                 )}
               </>
-            )}
+            )) : null}
             <View style={styles.numericField}>
               <Text style={styles.fieldLabel}>Weight (kg)</Text>
               <NumericInput

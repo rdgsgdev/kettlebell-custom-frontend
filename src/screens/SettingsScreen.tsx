@@ -197,7 +197,7 @@ export default function SettingsScreen({ onClose }: Props) {
                     <View style={styles.blockDefInfo}>
                       <Text style={[styles.blockDefLabel, { color: colors.textPrimary }]}>{def.label}</Text>
                       <Text style={[styles.blockDefType, { color: colors.textTertiary }]}>
-                        {def.baseType === 'emom' ? 'EMOM' : 'Standard'}
+                        {def.baseType === 'emom' ? 'EMOM' : def.baseType === 'juarez' ? 'Juarez Valley' : 'Standard'}
                       </Text>
                     </View>
                     <TouchableOpacity onPress={() => openEdit(def)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -246,7 +246,7 @@ export default function SettingsScreen({ onClose }: Props) {
 
               <Text style={[styles.editorLabel, { color: colors.textSecondary }]}>Type</Text>
               <View style={styles.segmentRow}>
-                {(['standard', 'emom'] as const).map((t) => {
+                {(['standard', 'emom', 'juarez'] as const).map((t) => {
                   const active = blockDraft.baseType === t;
                   return (
                     <TouchableOpacity
@@ -260,7 +260,7 @@ export default function SettingsScreen({ onClose }: Props) {
                       activeOpacity={0.7}
                     >
                       <Text style={[styles.segmentText, { color: active ? colors.accent : colors.textSecondary }]}>
-                        {t === 'emom' ? 'EMOM' : 'Standard'}
+                        {t === 'emom' ? 'EMOM' : t === 'juarez' ? 'Juarez' : 'Standard'}
                       </Text>
                     </TouchableOpacity>
                   );
