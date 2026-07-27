@@ -16,6 +16,7 @@ import {
   AppSettings,
   UserProfile,
   TargetedMuscle,
+  ExecutionType,
 } from '../models';
 
 // ── Mapping helpers (snake_case ↔ camelCase) ─────────────────────────────────
@@ -49,6 +50,7 @@ type ItemRow = {
   reps: number;
   sets: number | null;
   duration_seconds: number | null;
+  execution_type: string | null;
   weight: number;
   rest_time: number;
   sort_order: number;
@@ -62,6 +64,7 @@ function itemFromRow(r: ItemRow): WorkoutItem {
     reps: r.reps,
     sets: r.sets ?? undefined,
     durationSeconds: r.duration_seconds ?? undefined,
+    executionType: (r.execution_type as ExecutionType) ?? undefined,
     weight: Number(r.weight),
     restTime: r.rest_time,
   };
@@ -246,6 +249,7 @@ export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
           reps: it.reps,
           sets: it.sets ?? null,
           duration_seconds: it.durationSeconds ?? null,
+          execution_type: it.executionType ?? null,
           weight: it.weight,
           rest_time: it.restTime,
           sort_order: ii,
@@ -296,6 +300,7 @@ type ItemLogRow = {
   skipped: boolean;
   emom_minute: number | null;
   juarez_round: number | null;
+  duration_seconds: number | null;
   sort_order: number;
 };
 
@@ -316,6 +321,7 @@ function itemLogFromRow(r: ItemLogRow): ItemLog {
     skipped: r.skipped,
     emomMinute: r.emom_minute ?? undefined,
     juarezRound: r.juarez_round ?? undefined,
+    durationSeconds: r.duration_seconds ?? undefined,
   };
 }
 
@@ -392,6 +398,7 @@ export async function apiUpsertLog(log: WorkoutLog): Promise<void> {
         skipped: !!il.skipped,
         emom_minute: il.emomMinute ?? null,
         juarez_round: il.juarezRound ?? null,
+        duration_seconds: il.durationSeconds ?? null,
         sort_order: li,
       },
       { onConflict: 'id' },

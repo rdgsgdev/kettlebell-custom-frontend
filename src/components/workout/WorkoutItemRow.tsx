@@ -2,8 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, PanResponder, View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { WorkoutItem, RepMode, Exercise } from '../../models';
+import { WorkoutItem, RepMode, Exercise, ExecutionType } from '../../models';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
+import { getExecutionType } from '../../utils/helpers';
 import NumericInput from '../common/NumericInput';
 import ExercisePickerModal from '../exercises/ExercisePickerModal';
 import ExerciseDetailModal from '../exercises/ExerciseDetailModal';
@@ -192,9 +193,16 @@ export default function WorkoutItemRow({
 
         <View style={styles.rowRight}>
           <Text style={styles.quickInfo}>
-            {(item.durationSeconds ?? 0) > 0
-              ? `${item.durationSeconds}s`
-              : `${item.reps}r${item.repMode !== 'bilateral' ? '×2' : ''}${item.weight > 0 ? ` · ${item.weight}kg` : ''}`}
+            {(() => {
+              switch (getExecutionType(item)) {
+                case 'countdown':
+                  return `${item.durationSeconds ?? 0}s`;
+                case 'countup':
+                  return 'max';
+                default:
+                  return `${item.reps}r${item.repMode !== 'bilateral' ? '×2' : ''}${item.weight > 0 ? ` · ${item.weight}kg` : ''}`;
+              }
+            })()}
           </Text>
           <Ionicons
             name={expanded ? 'chevron-up' : 'chevron-down'}
@@ -206,23 +214,24 @@ export default function WorkoutItemRow({
 
       {expanded && (
         <View style={styles.details}>
-          {/* Exercise type: Reps or Timer — only for blocks where reps are manual */}
+          {/* Exercise type: Reps / Countdown / Count-up — only for blocks where reps are manual */}
           {showRestTime && repsEditable && (
             <View style={styles.fieldRow}>
               <Text style={styles.fieldLabel}>Type</Text>
               <View style={styles.toggleGroup}>
-                {(['reps', 'timer'] as const).map((type) => {
-                  const isActive = type === 'timer'
-                    ? (item.durationSeconds ?? 0) > 0
-                    : (item.durationSeconds ?? 0) === 0;
+                {(['reps', 'countdown', 'countup'] as ExecutionType[]).map((type) => {
+                  const isActive = getExecutionType(item) === type;
                   return (
                     <TouchableOpacity
                       key={type}
                       onPress={() => {
-                        if (type === 'timer') {
-                          onUpdate({ durationSeconds: 60, reps: 0 });
+                        if (type === 'reps') {
+                          onUpdate({ executionType: 'reps', durationSeconds: 0, reps: item.reps || 10 });
+                        } else if (type === 'countdown') {
+                          onUpdate({ executionType: 'countdown', durationSeconds: item.durationSeconds || 60, reps: 0 });
                         } else {
-                          onUpdate({ durationSeconds: 0, reps: item.reps || 10 });
+                          // countup: no preset target — clears durationSeconds.
+                          onUpdate({ executionType: 'countup', durationSeconds: undefined, reps: 0 });
                         }
                       }}
                       activeOpacity={0.7}
@@ -232,7 +241,7 @@ export default function WorkoutItemRow({
                       ]}
                     >
                       <Text style={[styles.toggleText, isActive && { color: accentColor }]}>
-                        {type === 'reps' ? 'Reps' : 'Timer'}
+                        {type === 'reps' ? 'Reps' : type === 'countdown' ? 'Countdown' : 'Count-up'}
                       </Text>
                     </TouchableOpacity>
                   );
@@ -273,46 +282,62 @@ export default function WorkoutItemRow({
 
           {/* Numeric fields */}
           <View style={styles.numericRow}>
-            {repsEditable ? ((item.durationSeconds ?? 0) > 0 ? (
-              <View style={styles.numericField}>
-                <Text style={styles.fieldLabel}>Duration (s)</Text>
-                <NumericInput
-                  style={styles.numericInput}
-                  value={item.durationSeconds ?? 60}
-                  onCommit={(n) => onUpdate({ durationSeconds: n })}
-                  min={1}
-                  returnKeyType="done"
-                  selectTextOnFocus
-                />
-              </View>
-            ) : (
-              <>
-                <View style={styles.numericField}>
-                  <Text style={styles.fieldLabel}>Reps</Text>
-                  <NumericInput
-                    style={styles.numericInput}
-                    value={item.reps}
-                    onCommit={(n) => onUpdate({ reps: n })}
-                    min={1}
-                    returnKeyType="done"
-                    selectTextOnFocus
-                  />
-                </View>
-                {showRestTime && (
+            {repsEditable && (() => {
+              const exType = getExecutionType(item);
+              if (exType === 'countdown') {
+                return (
                   <View style={styles.numericField}>
-                    <Text style={styles.fieldLabel}>Sets</Text>
+                    <Text style={styles.fieldLabel}>Duration (s)</Text>
                     <NumericInput
                       style={styles.numericInput}
-                      value={item.sets ?? 1}
-                      onCommit={(n) => onUpdate({ sets: n })}
+                      value={item.durationSeconds ?? 60}
+                      onCommit={(n) => onUpdate({ durationSeconds: n })}
                       min={1}
                       returnKeyType="done"
                       selectTextOnFocus
                     />
                   </View>
-                )}
-              </>
-            )) : null}
+                );
+              }
+              if (exType === 'countup') {
+                // No preset target — the timer counts up from 0 and the user
+                // stops it to record how long they held. Just show a hint.
+                return (
+                  <View style={styles.numericField}>
+                    <Text style={styles.fieldLabel}>Duration</Text>
+                    <Text style={styles.countupHint}>Counts up from 0 · stop to record</Text>
+                  </View>
+                );
+              }
+              return (
+                <>
+                  <View style={styles.numericField}>
+                    <Text style={styles.fieldLabel}>Reps</Text>
+                    <NumericInput
+                      style={styles.numericInput}
+                      value={item.reps}
+                      onCommit={(n) => onUpdate({ reps: n })}
+                      min={1}
+                      returnKeyType="done"
+                      selectTextOnFocus
+                    />
+                  </View>
+                  {showRestTime && (
+                    <View style={styles.numericField}>
+                      <Text style={styles.fieldLabel}>Sets</Text>
+                      <NumericInput
+                        style={styles.numericInput}
+                        value={item.sets ?? 1}
+                        onCommit={(n) => onUpdate({ sets: n })}
+                        min={1}
+                        returnKeyType="done"
+                        selectTextOnFocus
+                      />
+                    </View>
+                  )}
+                </>
+              );
+            })()}
             <View style={styles.numericField}>
               <Text style={styles.fieldLabel}>Weight (kg)</Text>
               <NumericInput
@@ -438,6 +463,12 @@ function makeStyles(c: typeof Colors) {
       paddingHorizontal: Spacing.sm,
       paddingVertical: Spacing.sm,
       textAlign: 'center',
+    },
+    countupHint: {
+      ...Typography.caption,
+      color: c.textTertiary,
+      fontStyle: 'italic',
+      paddingTop: Spacing.sm,
     },
   });
 }

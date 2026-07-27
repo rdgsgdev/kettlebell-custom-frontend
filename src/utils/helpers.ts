@@ -46,8 +46,20 @@ export function isSameDay(a: string, b: string): boolean {
 }
 
 // ── Block display helpers ──────────────────────────────────────────────────────
-import { BlockType, WorkoutBlock, ItemLog } from '../models';
+import { BlockType, WorkoutBlock, ItemLog, WorkoutItem, ExecutionType } from '../models';
 import { Colors } from '../theme';
+
+/**
+ * Derives an item's execution type, for backward compatibility with templates
+ * created before `executionType` existed (which only carry `durationSeconds`).
+ *  - explicit executionType wins
+ *  - otherwise durationSeconds > 0 → 'countdown'
+ *  - otherwise 'reps'
+ */
+export function getExecutionType(item: { executionType?: ExecutionType; durationSeconds?: number }): ExecutionType {
+  if (item.executionType) return item.executionType;
+  return (item.durationSeconds ?? 0) > 0 ? 'countdown' : 'reps';
+}
 
 export function blockColor(type: BlockType): string {
   switch (type) {
