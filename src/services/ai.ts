@@ -59,6 +59,7 @@ export interface AITemplateBlock {
     weight: number;
     restTime: number;
     durationSeconds?: number;
+    executionType?: 'reps' | 'countdown' | 'countup';
   }[];
   emomMinutes?: number;
   juarezStartingReps?: number;

@@ -6,6 +6,7 @@
 
 export type RepMode = 'bilateral' | 'unilateral' | 'unilateral-fr';
 export type BlockType = 'starter' | 'emom' | 'finisher' | 'mobility' | 'stretching' | 'juarez';
+export type ExecutionType = 'reps' | 'countdown' | 'countup';
 
 // ─── Settings & Profile ───────────────────────────────────────────────────────
 
@@ -101,7 +102,8 @@ export interface WorkoutItem {
   repMode: RepMode;
   reps: number;
   sets?: number;
-  durationSeconds?: number;
+  durationSeconds?: number;    // countdown target only; countup has no preset target
+  executionType?: ExecutionType; // 'reps' | 'countdown' | 'countup'. undefined → derived (see getExecutionType)
   weight: number;
   restTime: number;
 }
@@ -146,6 +148,7 @@ export interface ItemLog {
   skipped?: boolean;
   emomMinute?: number; // only for EMOM items
   juarezRound?: number; // only for Juarez Valley items — 1-indexed round number
+  durationSeconds?: number; // performed seconds for countdown/countup holds
 }
 
 export interface WorkoutLog {

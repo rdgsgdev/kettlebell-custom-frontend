@@ -182,9 +182,11 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
                           >
                             {item.skipped
                               ? 'skipped'
-                              : isUnilateral
-                                ? `${item.repsLeft}${item.repMode === 'unilateral-fr' ? 'F' : 'L'} / ${item.repsRight ?? item.repsLeft}${item.repMode === 'unilateral-fr' ? 'R' : 'R'} reps`
-                                : `${item.reps}${item.repMode !== 'bilateral' ? '×2' : ''} reps`}
+                              : item.durationSeconds != null
+                                ? `${item.durationSeconds}s`
+                                : isUnilateral
+                                  ? `${item.repsLeft}${item.repMode === 'unilateral-fr' ? 'F' : 'L'} / ${item.repsRight ?? item.repsLeft}${item.repMode === 'unilateral-fr' ? 'R' : 'R'} reps`
+                                  : `${item.reps}${item.repMode !== 'bilateral' ? '×2' : ''} reps`}
                             {!item.skipped && item.weight > 0 ? ` · ${item.weight}kg` : ''}
                           </Text>
                           {(canEdit || canEditWeight) && (
@@ -198,8 +200,19 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
 
                         {isEditing && (canEdit || canEditWeight) && (
                           <View style={styles.itemEditSection}>
-                            {/* Reps (skip for pure-duration items — they have no reps field to edit here) */}
-                            {canEdit && (
+                            {/* Duration (for countdown/countup holds) OR reps */}
+                            {canEdit && item.durationSeconds != null ? (
+                              <View style={styles.fieldRow}>
+                                <Text style={styles.fieldLabel}>DURATION (s)</Text>
+                                <NumericInput
+                                  style={[styles.numInput, { borderColor: color }]}
+                                  value={item.durationSeconds}
+                                  onCommit={(n) => patchItem(item.id, { durationSeconds: n })}
+                                  min={0}
+                                  selectTextOnFocus
+                                />
+                              </View>
+                            ) : canEdit && (
                               <View style={styles.fieldRow}>
                                 <Text style={styles.fieldLabel}>REPS</Text>
                                 {isUnilateral ? (

@@ -116,6 +116,7 @@ export default function TemplatePreviewCard({
             weight: it.weight,
             restTime: it.restTime,
             durationSeconds: it.durationSeconds,
+            executionType: it.executionType,
           }),
         ),
         emomMinutes: b.emomMinutes,

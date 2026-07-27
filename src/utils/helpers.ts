@@ -17,6 +17,22 @@ export function formatDuration(totalSeconds: number): string {
   return `${s}s`;
 }
 
+/**
+ * Compact H:MM:SS countdown that ALWAYS shows seconds, so a ticking timer
+ * visibly updates every second (unlike formatDuration, which collapses to
+ * "1h 59m" for a full minute when hours > 0 and looks frozen).
+ * Examples: 7199 → "1:59:59", 305 → "5:05", 9 → "0:09".
+ */
+export function formatCountdown(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  const ss = String(sec).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -46,8 +62,20 @@ export function isSameDay(a: string, b: string): boolean {
 }
 
 // ── Block display helpers ──────────────────────────────────────────────────────
-import { BlockType, WorkoutBlock, ItemLog } from '../models';
+import { BlockType, WorkoutBlock, ItemLog, WorkoutItem, ExecutionType } from '../models';
 import { Colors } from '../theme';
+
+/**
+ * Derives an item's execution type, for backward compatibility with templates
+ * created before `executionType` existed (which only carry `durationSeconds`).
+ *  - explicit executionType wins
+ *  - otherwise durationSeconds > 0 → 'countdown'
+ *  - otherwise 'reps'
+ */
+export function getExecutionType(item: { executionType?: ExecutionType; durationSeconds?: number }): ExecutionType {
+  if (item.executionType) return item.executionType;
+  return (item.durationSeconds ?? 0) > 0 ? 'countdown' : 'reps';
+}
 
 export function blockColor(type: BlockType): string {
   switch (type) {
