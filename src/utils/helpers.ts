@@ -17,6 +17,22 @@ export function formatDuration(totalSeconds: number): string {
   return `${s}s`;
 }
 
+/**
+ * Compact H:MM:SS countdown that ALWAYS shows seconds, so a ticking timer
+ * visibly updates every second (unlike formatDuration, which collapses to
+ * "1h 59m" for a full minute when hours > 0 and looks frozen).
+ * Examples: 7199 → "1:59:59", 305 → "5:05", 9 → "0:09".
+ */
+export function formatCountdown(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  const ss = String(sec).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;

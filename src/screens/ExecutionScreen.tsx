@@ -8,18 +8,20 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Audio } from 'expo-av';
 import { useKeepAwake } from 'expo-keep-awake';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
 import { WorkoutItem, WorkoutLog, ItemLog } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
-import { generateId, formatDuration, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, getExecutionType } from '../utils/helpers';
-import { scheduleAlarm, cancelAlarm } from '../utils/notifications';
+import { generateId, formatDuration, formatCountdown, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, getExecutionType } from '../utils/helpers';
+import { scheduleAlarm, cancelAlarm, scheduleRestOverNotification, cancelRestOverNotification } from '../utils/notifications';
 import NumericInput from '../components/common/NumericInput';
 import ExerciseDetailModal from '../components/exercises/ExerciseDetailModal';
 
@@ -69,15 +71,49 @@ function juarezStepInfo(
   return { itemIdx: 0, reps: juarezRepsForRound(step, startingReps), round: step };
 }
 
+// ── Alarm state persistence ──────────────────────────────────────────────────
+// The alarm countdown lives in component state, which is lost when the app is
+// closed/relaunches — yet the OS-scheduled notification keeps ticking and will
+// fire. We persist the wall-clock fire timestamp (+ paused state) so that on
+// reopen we can recompute the remaining seconds and show the alarm card again.
+const ALARM_STATE_KEY = '@kbc/alarmState';
+interface PersistedAlarmState {
+  templateId: string;   // only restore for the workout that started the alarm
+  fireAt: number;       // wall-clock ms when the alarm is due to fire
+  paused: boolean;      // true if the user paused (fireAt is stale until resume)
+  pausedRemainingSecs: number; // remaining seconds at pause time (used on resume)
+}
+async function saveAlarmState(state: PersistedAlarmState | null): Promise<void> {
+  try {
+    if (state) await AsyncStorage.setItem(ALARM_STATE_KEY, JSON.stringify(state));
+    else await AsyncStorage.removeItem(ALARM_STATE_KEY);
+  } catch {
+    // non-fatal — the OS notification still fires regardless
+  }
+}
+async function loadAlarmState(): Promise<PersistedAlarmState | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ALARM_STATE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedAlarmState;
+    if (!parsed || typeof parsed.fireAt !== 'number') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 interface SavedState {
   phase: Phase;
   blockIdx: number;
   manualIdx: number;
   manualSetIdx: number;
   restSeconds: number;
+  restEndsAt: number | null;
   emomStep: number;
   emomSeconds: number;
   exerciseTimerSeconds: number;
+  exerciseTimerActive: boolean;
 }
 
 export default function ExecutionScreen() {
@@ -139,6 +175,13 @@ export default function ExecutionScreen() {
   const exerciseTimerSecondsRef = useRef(0);
   const exerciseTimerActiveRef = useRef(false);
   const restTypeRef = useRef<'sets' | 'exercises'>('exercises');
+  // Wall-clock timestamp (ms) when the current rest ends; null when not resting.
+  // Used so the rest countdown stays correct when the app is backgrounded (JS
+  // intervals are suspended by the OS) and drives the "rest over" notification.
+  const restEndsAtRef = useRef<number | null>(null);
+  const [restNotifId, setRestNotifId] = useState<string | null>(null);
+  const restNotifIdRef = useRef<string | null>(null);
+  restNotifIdRef.current = restNotifId;
   const savedStateRef = useRef<SavedState | null>(null);
   const savingRef = useRef(false);
   const [hasSaved, setHasSaved] = useState(false);
@@ -230,11 +273,19 @@ export default function ExecutionScreen() {
       const p = phaseRef.current;
 
       if (p === 'rest') {
-        const s = restSecondsRef.current - 1;
+        // Wall-clock-correct remaining seconds. Falls back to tick decrement
+        // only if no end timestamp was set (defensive).
+        const s = restEndsAtRef.current != null
+          ? Math.max(0, Math.ceil((restEndsAtRef.current - Date.now()) / 1000))
+          : restSecondsRef.current - 1;
         if (s > 0 && s % 30 === 0) { playWarning(); }
         if (s > 0 && s <= 3) { playTick(); }
         if (s <= 0) {
           setRestSeconds(0);
+          restEndsAtRef.current = null;
+          cancelRestOverNotification(restNotifIdRef.current);
+          setRestNotifId(null);
+          restNotifIdRef.current = null;
           stopTimer();
           if (restTypeRef.current === 'sets') {
             setManualSetIdx((si) => si + 1);
@@ -303,10 +354,10 @@ export default function ExecutionScreen() {
             }));
           }
           if (item.restTime > 0) {
-            setRestSeconds(item.restTime);
-            setPhase('rest');
-            restTypeRef.current = isLastSet ? 'exercises' : 'sets';
-            startTimer();
+            const nextLabel = isLastSet
+              ? (block.items[idx + 1]?.exerciseName || 'next exercise')
+              : `${item.exerciseName} (set ${setIdx + 2})`;
+            beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
           } else {
             if (isLastSet) {
               setManualIdx((i) => i + 1);
@@ -323,6 +374,42 @@ export default function ExecutionScreen() {
     }, 1000);
   }, [stopTimer, playWarning, playTick]);
 
+  // ── Begin a rest period ─────────────────────────────────────────────────────
+  // Sets the wall-clock end timestamp (so the countdown survives backgrounding),
+  // seeds the display, and schedules a local "rest over" notification that fires
+  // even if the user has switched to another app.
+  const beginRest = (seconds: number, type: 'sets' | 'exercises', nextLabel: string) => {
+    setRestSeconds(seconds);
+    restSecondsRef.current = seconds;
+    restEndsAtRef.current = Date.now() + seconds * 1000;
+    restTypeRef.current = type;
+    setPhase('rest');
+    startTimer();
+    // Cancel any previous (shouldn't exist) before scheduling a new one.
+    cancelRestOverNotification(restNotifIdRef.current);
+    scheduleRestOverNotification(seconds, nextLabel).then((id) => {
+      setRestNotifId(id);
+      restNotifIdRef.current = id;
+    });
+  };
+
+  // ── End the rest period immediately (skip or natural end) ───────────────────
+  // Clears the timestamp + notification, then advances to the next set/exercise.
+  const endRestNow = () => {
+    restEndsAtRef.current = null;
+    cancelRestOverNotification(restNotifIdRef.current);
+    setRestNotifId(null);
+    restNotifIdRef.current = null;
+    stopTimer();
+    if (restTypeRef.current === 'sets') {
+      setManualSetIdx((si) => si + 1);
+    } else {
+      setManualIdx((i) => i + 1);
+      setManualSetIdx(0);
+    }
+    setPhase('exercise');
+  };
+
   const startAlarmInterval = useCallback(() => {
     stopAlarmInterval();
     alarmIntervalRef.current = setInterval(() => {
@@ -331,6 +418,8 @@ export default function ExecutionScreen() {
         stopAlarmInterval();
         setAlarmCountdownSecs(0);
         alarmCountdownSecsRef.current = 0;
+        // Alarm fired — clear persisted state so a later reopen doesn't restore it.
+        saveAlarmState(null);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       } else {
         setAlarmCountdownSecs(s);
@@ -368,6 +457,63 @@ export default function ExecutionScreen() {
   // ── Cleanup on unmount ──────────────────────────────────────────────────────
   useEffect(() => () => stopTimer(), [stopTimer]);
   useEffect(() => () => stopAlarmInterval(), [stopAlarmInterval]);
+
+  // ── Restore alarm countdown on mount ────────────────────────────────────────
+  // The OS-scheduled notification survives app close, but the in-memory countdown
+  // state is lost. Recompute remaining seconds from the persisted fire timestamp
+  // so the alarm card reappears with the correct time (and keeps ticking). Runs
+  // once when the template is first available.
+  const alarmRestoredRef = useRef(false);
+  useEffect(() => {
+    if (alarmRestoredRef.current || !template) return;
+    alarmRestoredRef.current = true;
+    (async () => {
+      const saved = await loadAlarmState();
+      if (!saved || saved.templateId !== template.id) return;
+      if (saved.paused) {
+        // Alarm was paused when the app closed — restore paused with its remaining.
+        const remaining = Math.max(0, Math.round(saved.pausedRemainingSecs));
+        alarmCountdownSecsRef.current = remaining;
+        setAlarmCountdownSecs(remaining);
+        setAlarmCountdownPaused(true);
+      } else {
+        const remaining = Math.ceil((saved.fireAt - Date.now()) / 1000);
+        if (remaining <= 0) {
+          // Already fired while the app was closed — nothing left to show.
+          saveAlarmState(null);
+        } else {
+          alarmCountdownSecsRef.current = remaining;
+          setAlarmCountdownSecs(remaining);
+          setAlarmCountdownPaused(false);
+          startAlarmInterval();
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [template]);
+
+  // ── Foreground re-sync: when returning to the app during a rest, recompute the
+  // remaining seconds from the wall-clock end timestamp (JS intervals are
+  // suspended while backgrounded, so the tick count drifted / froze). If rest
+  // already ended while away (the "rest over" notification also fired), finish
+  // the rest now.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      if (phaseRef.current !== 'rest' || restEndsAtRef.current == null) return;
+      const remaining = Math.ceil((restEndsAtRef.current - Date.now()) / 1000);
+      if (remaining <= 0) {
+        // Rest ended while backgrounded — advance to the next set/exercise.
+        setRestSeconds(0);
+        endRestNow();
+      } else {
+        // Snap the displayed countdown to the real remaining time.
+        setRestSeconds(remaining);
+        restSecondsRef.current = remaining;
+      }
+    });
+    return () => sub.remove();
+  }, []);
 
   // ── Reset edit field when exercise changes ──────────────────────────────────
   useEffect(() => {
@@ -411,6 +557,12 @@ export default function ExecutionScreen() {
       setPhase('done');
       // Cancel alarm when workout finishes naturally
       setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
+      saveAlarmState(null);
+      // Cancel any pending rest-over notification so it doesn't fire post-workout.
+      cancelRestOverNotification(restNotifIdRef.current);
+      setRestNotifId(null);
+      restNotifIdRef.current = null;
+      restEndsAtRef.current = null;
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       return;
     }
@@ -453,6 +605,11 @@ export default function ExecutionScreen() {
     setActualDurations({});
     setEditingField(null);
     stopExerciseTimer();
+    // Clear any leftover rest-over notification from a prior run.
+    cancelRestOverNotification(restNotifIdRef.current);
+    setRestNotifId(null);
+    restNotifIdRef.current = null;
+    restEndsAtRef.current = null;
     savedStateRef.current = null;
     savingRef.current = false;
     setHasSaved(false);
@@ -477,9 +634,13 @@ export default function ExecutionScreen() {
     alarmCountdownSecsRef.current = seconds;
     setAlarmCountdownSecs(seconds);
     setAlarmCountdownPaused(false);
+    const fireAt = Date.now() + seconds * 1000;
     scheduleAlarm(template.alarmMinutes, template.name).then((id) => {
       setAlarmNotifId(id);
     }).catch(() => {});
+    // Persist so the alarm card reappears (with the right remaining time) after
+    // the app is closed and reopened — the OS notification fires regardless.
+    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0 });
     startAlarmInterval();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
   }, [template, startAlarmInterval]);
@@ -488,15 +649,25 @@ export default function ExecutionScreen() {
     stopAlarmInterval();
     setAlarmCountdownPaused(true);
     setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
+    // Persist the paused remaining so resume (even after app reopen) is correct.
+    saveAlarmState({
+      templateId: template?.id ?? '',
+      fireAt: 0,
+      paused: true,
+      pausedRemainingSecs: Math.max(0, alarmCountdownSecsRef.current),
+    });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-  }, [stopAlarmInterval]);
+  }, [stopAlarmInterval, template]);
 
   const handleResumeAlarm = useCallback(() => {
     if (alarmCountdownSecsRef.current <= 0 || !template) return;
     setAlarmCountdownPaused(false);
-    scheduleAlarm(alarmCountdownSecsRef.current / 60, template.name).then((id) => {
+    const remaining = alarmCountdownSecsRef.current;
+    const fireAt = Date.now() + remaining * 1000;
+    scheduleAlarm(remaining / 60, template.name).then((id) => {
       setAlarmNotifId(id);
     }).catch(() => {});
+    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0 });
     startAlarmInterval();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, [template, startAlarmInterval]);
@@ -507,6 +678,7 @@ export default function ExecutionScreen() {
     alarmCountdownSecsRef.current = 0;
     setAlarmCountdownPaused(false);
     setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
+    saveAlarmState(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, [stopAlarmInterval]);
 
@@ -537,10 +709,10 @@ export default function ExecutionScreen() {
       const firstItem = currentBlock.items[0];
       const rest = firstItem?.restTime ?? 0;
       if (rest > 0) {
-        setRestSeconds(rest);
-        setPhase('rest');
-        restTypeRef.current = 'exercises';
-        startTimer();
+        const nextStep = manualIdx + 1;
+        const nextItemIdx = juarezStepInfo(nextStep, currentBlock).itemIdx;
+        const nextLabel = currentBlock.items[nextItemIdx]?.exerciseName || `Round ${nextStep + 1}`;
+        beginRest(rest, 'exercises', nextLabel);
       } else {
         setManualIdx((i) => i + 1);
       }
@@ -558,10 +730,10 @@ export default function ExecutionScreen() {
       }));
     }
     if (item.restTime > 0) {
-      setRestSeconds(item.restTime);
-      setPhase('rest');
-      restTypeRef.current = isLastSet ? 'exercises' : 'sets';
-      startTimer();
+      const nextLabel = isLastSet
+        ? (currentBlock.items[manualIdx + 1]?.exerciseName || 'next exercise')
+        : `${item.exerciseName} (set ${manualSetIdx + 2})`;
+      beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
     } else {
       if (isLastSet) {
         setManualIdx((i) => i + 1);
@@ -597,10 +769,10 @@ export default function ExecutionScreen() {
       }));
     }
     if (item.restTime > 0) {
-      setRestSeconds(item.restTime);
-      setPhase('rest');
-      restTypeRef.current = isLastSet ? 'exercises' : 'sets';
-      startTimer();
+      const nextLabel = isLastSet
+        ? (currentBlock.items[manualIdx + 1]?.exerciseName || 'next exercise')
+        : `${item.exerciseName} (set ${manualSetIdx + 2})`;
+      beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
     } else {
       if (isLastSet) {
         setManualIdx((i) => i + 1);
@@ -653,9 +825,7 @@ export default function ExecutionScreen() {
   const handlePreviousExercise = () => {
     if (!template) return;
     const currentBlock = template.blocks[blockIdx];
-    stopTimer();
-    setExerciseTimerSeconds(0);
-    exerciseTimerSecondsRef.current = 0;
+    stopExerciseTimer();
     if (manualIdx > 0) {
       const prevIdx = manualIdx - 1;
       setManualIdx(prevIdx);
@@ -726,22 +896,33 @@ export default function ExecutionScreen() {
   };
 
   const handleSkipRest = () => {
-    stopTimer();
-    if (restTypeRef.current === 'sets') {
-      setManualSetIdx((si) => si + 1);
-    } else {
-      setManualIdx((i) => i + 1);
-      setManualSetIdx(0);
-    }
-    setPhase('exercise');
+    endRestNow();
   };
 
   const handleTogglePause = () => {
     if (isPaused) {
       setIsPaused(false);
+      // Resuming a rest: recompute the end timestamp from the remaining seconds
+      // (the timestamp was frozen on pause) and re-schedule the notification.
+      if (phaseRef.current === 'rest') {
+        restEndsAtRef.current = Date.now() + Math.max(0, restSecondsRef.current) * 1000;
+        cancelRestOverNotification(restNotifIdRef.current);
+        scheduleRestOverNotification(Math.max(1, restSecondsRef.current), '').then((id) => {
+          setRestNotifId(id);
+          restNotifIdRef.current = id;
+        });
+      }
       startTimer();
     } else {
       setIsPaused(true);
+      // Pausing a rest: freeze the end timestamp so it doesn't elapse while
+      // paused, and cancel the pending notification (re-scheduled on resume).
+      if (phaseRef.current === 'rest') {
+        restEndsAtRef.current = null;
+        cancelRestOverNotification(restNotifIdRef.current);
+        setRestNotifId(null);
+        restNotifIdRef.current = null;
+      }
       stopTimer();
     }
   };
@@ -749,10 +930,17 @@ export default function ExecutionScreen() {
   const openDetail = (name: string) => {
     setDetailExerciseName(name);
     const timerIsRunning =
-      (phase === 'rest' || phase === 'emom' || (phase === 'exercise' && exerciseTimerSeconds > 0)) &&
+      (phase === 'rest' || phase === 'emom' || (phase === 'exercise' && exerciseTimerActiveRef.current)) &&
       !isPaused;
     if (timerIsRunning) {
       setIsPaused(true);
+      // Freeze a running rest so it doesn't elapse while the detail modal is open.
+      if (phase === 'rest') {
+        restEndsAtRef.current = null;
+        cancelRestOverNotification(restNotifIdRef.current);
+        setRestNotifId(null);
+        restNotifIdRef.current = null;
+      }
       stopTimer();
       pausedForDetailRef.current = true;
     }
@@ -763,6 +951,14 @@ export default function ExecutionScreen() {
     if (pausedForDetailRef.current) {
       pausedForDetailRef.current = false;
       setIsPaused(false);
+      // Resume a frozen rest: recompute the end timestamp + re-schedule notif.
+      if (phaseRef.current === 'rest') {
+        restEndsAtRef.current = Date.now() + Math.max(0, restSecondsRef.current) * 1000;
+        scheduleRestOverNotification(Math.max(1, restSecondsRef.current), '').then((id) => {
+          setRestNotifId(id);
+          restNotifIdRef.current = id;
+        });
+      }
       startTimer();
     }
   };
@@ -770,15 +966,22 @@ export default function ExecutionScreen() {
   const handleStop = () => {
     // Cancel any scheduled alarm
     if (alarmNotifId) { cancelAlarm(alarmNotifId); setAlarmNotifId(null); }
+    saveAlarmState(null);
+    // Cancel a pending rest-over notification (re-scheduled on resume if needed)
+    cancelRestOverNotification(restNotifIdRef.current);
+    setRestNotifId(null);
+    restNotifIdRef.current = null;
     savedStateRef.current = {
       phase,
       blockIdx,
       manualIdx,
       manualSetIdx,
       restSeconds,
+      restEndsAt: restEndsAtRef.current,
       emomStep,
       emomSeconds,
       exerciseTimerSeconds: exerciseTimerSecondsRef.current,
+      exerciseTimerActive: exerciseTimerActiveRef.current,
     };
     stopTimer();
     setIsPaused(false);
@@ -794,23 +997,43 @@ export default function ExecutionScreen() {
     setManualIdx(saved.manualIdx);
     setManualSetIdx(saved.manualSetIdx);
     setRestSeconds(saved.restSeconds);
+    restSecondsRef.current = saved.restSeconds;
     setEmomStep(saved.emomStep);
     setEmomSeconds(saved.emomSeconds);
     setIsPaused(false);
     exerciseTimerSecondsRef.current = saved.exerciseTimerSeconds;
-    if (saved.exerciseTimerSeconds > 0) {
-      setExerciseTimerSeconds(saved.exerciseTimerSeconds);
+    exerciseTimerActiveRef.current = saved.exerciseTimerActive;
+    setExerciseTimerSeconds(saved.exerciseTimerSeconds);
+    setExerciseTimerActive(saved.exerciseTimerActive);
+    if (saved.exerciseTimerActive) {
+      // restart the duration timer (countdown or count-up) on resume
+      startTimer();
+    }
+    // Resuming into rest: recompute the end timestamp from the remaining seconds
+    // (time passed while stopped, so the old timestamp is stale) and re-schedule
+    // the rest-over notification.
+    if (saved.phase === 'rest') {
+      restEndsAtRef.current = Date.now() + Math.max(0, saved.restSeconds) * 1000;
+      scheduleRestOverNotification(Math.max(1, saved.restSeconds), '').then((id) => {
+        setRestNotifId(id);
+        restNotifIdRef.current = id;
+      });
+      startTimer();
+    } else if (saved.phase === 'emom') {
+      startTimer();
     }
     savedStateRef.current = null;
     setWorkoutEndedAt(null);
-    if (saved.phase === 'emom' || saved.phase === 'rest') {
-      startTimer();
-    }
   };
 
   const handleDiscard = () => {
     savedStateRef.current = null;
     stopTimer();
+    // Cancel any pending rest-over notification so it doesn't fire after discard.
+    cancelRestOverNotification(restNotifIdRef.current);
+    setRestNotifId(null);
+    restNotifIdRef.current = null;
+    restEndsAtRef.current = null;
     setPhase('idle');
     setNote('');
     setActualReps({});
@@ -821,8 +1044,7 @@ export default function ExecutionScreen() {
     setEmomCompletedByBlock({});
     setEmomSkippedByBlock({});
     setEditingField(null);
-    setExerciseTimerSeconds(0);
-    exerciseTimerSecondsRef.current = 0;
+    stopExerciseTimer();
   };
 
   const confirmLog = async () => {
@@ -958,8 +1180,11 @@ export default function ExecutionScreen() {
     setEmomCompletedByBlock({});
     setEmomSkippedByBlock({});
     setEditingField(null);
-    setExerciseTimerSeconds(0);
-    exerciseTimerSecondsRef.current = 0;
+    stopExerciseTimer();
+    cancelRestOverNotification(restNotifIdRef.current);
+    setRestNotifId(null);
+    restNotifIdRef.current = null;
+    restEndsAtRef.current = null;
   };
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1095,7 +1320,7 @@ export default function ExecutionScreen() {
               <View style={styles.alarmCountdownHeader}>
                 <Ionicons name="alarm-outline" size={20} color={colors.warning} />
                 <Text style={styles.alarmCountdownTime}>
-                  {alarmCountdownSecs > 0 ? formatDuration(alarmCountdownSecs) : 'Alarm!'}
+                  {alarmCountdownSecs > 0 ? formatCountdown(alarmCountdownSecs) : 'Alarm!'}
                 </Text>
                 {alarmCountdownPaused && (
                   <View style={styles.alarmPausedBadge}>
@@ -1408,12 +1633,12 @@ export default function ExecutionScreen() {
           <Ionicons name="alarm-outline" size={13} color={colors.warning} />
           <Text style={styles.alarmActiveText}>
             {alarmCountdownSecs != null && alarmCountdownSecs > 0
-              ? `Alarm in ${formatDuration(alarmCountdownSecs)}`
+              ? `Alarm in ${formatCountdown(alarmCountdownSecs)}`
               : `Alarm in ${template?.alarmMinutes} min`}
           </Text>
           <TouchableOpacity
             style={styles.alarmCancelBtn}
-            onPress={() => { cancelAlarm(alarmNotifId); setAlarmNotifId(null); stopAlarmInterval(); setAlarmCountdownSecs(null); setAlarmCountdownPaused(false); }}
+            onPress={handleStopAlarm}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Text style={styles.alarmCancelText}>Cancel</Text>
