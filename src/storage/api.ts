@@ -18,6 +18,7 @@ import {
   TargetedMuscle,
   ExecutionType,
 } from '../models';
+import { normalizeProfile } from '../utils/objectives';
 
 // ── Mapping helpers (snake_case ↔ camelCase) ─────────────────────────────────
 
@@ -446,17 +447,21 @@ export async function apiPushSettings(settings: AppSettings): Promise<void> {
 export async function apiPullProfile(): Promise<UserProfile | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('name, weight_kg, height_cm, birth_year, goals')
+    .select('name, weight_kg, height_cm, birth_year, body_fat_pct, goals, objectives')
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  return {
+  // Normalize so older rows (pre-dating objectives/body_fat_pct) still resolve
+  // to a valid UserProfile with the seeded objectives backfilled.
+  return normalizeProfile({
     name: data.name ?? '',
     weightKg: data.weight_kg ?? undefined,
     heightCm: data.height_cm ?? undefined,
     birthYear: data.birth_year ?? undefined,
+    bodyFatPct: data.body_fat_pct ?? undefined,
     goals: data.goals ?? [],
-  };
+    objectives: data.objectives ?? undefined,
+  });
 }
 
 export async function apiPushProfile(profile: UserProfile): Promise<void> {
@@ -466,7 +471,9 @@ export async function apiPushProfile(profile: UserProfile): Promise<void> {
       weight_kg: profile.weightKg ?? null,
       height_cm: profile.heightCm ?? null,
       birth_year: profile.birthYear ?? null,
+      body_fat_pct: profile.bodyFatPct ?? null,
       goals: profile.goals ?? [],
+      objectives: profile.objectives ?? [],
     },
     { onConflict: 'id' },
   );

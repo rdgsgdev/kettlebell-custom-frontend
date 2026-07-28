@@ -10,6 +10,7 @@ import { useColorScheme } from 'react-native';
 import { AppSettings, UserProfile, DEFAULT_SETTINGS, DEFAULT_PROFILE } from '../models';
 import * as Storage from '../storage';
 import { DarkColors, LightColors } from '../theme';
+import { normalizeProfile } from '../utils/objectives';
 
 export type ThemeColors = typeof DarkColors;
 
@@ -40,9 +41,15 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const systemScheme = useColorScheme();
 
   const reloadFromCache = useCallback(async () => {
-    const [s, p] = await Promise.all([Storage.loadSettings(), Storage.loadProfile()]);
+    const [s, rawProfile] = await Promise.all([Storage.loadSettings(), Storage.loadProfile()]);
     setSettings(s);
+    // Backfill the `objectives` field for users upgrading from a version that
+    // predates measurable objectives. Persist the migration exactly once.
+    const p = normalizeProfile(rawProfile);
     setProfile(p);
+    if (!rawProfile?.objectives) {
+      await Storage.saveProfile(p);
+    }
   }, []);
 
   useEffect(() => {
