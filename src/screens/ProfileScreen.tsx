@@ -13,29 +13,28 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
+import { useAppContext } from '../context/AppContext';
+import { Objective } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
 import SettingsScreen from './SettingsScreen';
 import CoachChat from '../components/coach/CoachChat';
-
-const GOALS = [
-  { id: 'weight_loss', label: 'Lose weight', icon: 'trending-down-outline' as const },
-  { id: 'muscle_gain', label: 'Build muscle', icon: 'barbell-outline' as const },
-  { id: 'endurance', label: 'Endurance', icon: 'pulse-outline' as const },
-  { id: 'strength', label: 'Strength', icon: 'flame-outline' as const },
-  { id: 'flexibility', label: 'Flexibility', icon: 'body-outline' as const },
-  { id: 'general', label: 'Stay active', icon: 'heart-outline' as const },
-];
+import ObjectiveCard from '../components/profile/ObjectiveCard';
+import AddObjectiveModal from '../components/profile/AddObjectiveModal';
+import { computeProgress } from '../utils/objectives';
 
 export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
+  const { logs } = useAppContext();
   const [showSettings, setShowSettings] = useState(false);
   const [showCoach, setShowCoach] = useState(false);
+  const [showAddObjective, setShowAddObjective] = useState(false);
 
-  const toggleGoal = (id: string) => {
-    const goals = profile.goals.includes(id)
-      ? profile.goals.filter((g) => g !== id)
-      : [...profile.goals, id];
-    updateProfile({ goals });
+  const addObjective = (objective: Objective) => {
+    updateProfile({ objectives: [...profile.objectives, objective] });
+  };
+
+  const deleteObjective = (id: string) => {
+    updateProfile({ objectives: profile.objectives.filter((o) => o.id !== id) });
   };
 
   return (
@@ -122,7 +121,7 @@ export default function ProfileScreen() {
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>kg</Text>
             </View>
 
-            <View style={styles.fieldRow}>
+            <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
               <Ionicons name="resize-outline" size={16} color={colors.textTertiary} style={styles.fieldIcon} />
               <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Height</Text>
               <TextInput
@@ -139,37 +138,62 @@ export default function ProfileScreen() {
               />
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>cm</Text>
             </View>
+
+            <View style={styles.fieldRow}>
+              <Ionicons name="body-outline" size={16} color={colors.textTertiary} style={styles.fieldIcon} />
+              <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>Body fat</Text>
+              <TextInput
+                style={[styles.fieldInput, { color: colors.textPrimary }]}
+                value={profile.bodyFatPct != null ? String(profile.bodyFatPct) : ''}
+                onChangeText={(v) => {
+                  const n = parseFloat(v);
+                  updateProfile({ bodyFatPct: isNaN(n) ? undefined : n });
+                }}
+                placeholder="%"
+                placeholderTextColor={colors.textTertiary}
+                keyboardType="decimal-pad"
+                returnKeyType="done"
+              />
+              <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>%</Text>
+            </View>
           </View>
 
-          {/* Goals */}
+          {/* Objectives */}
           <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>OBJECTIVES</Text>
-            <View style={styles.goalsGrid}>
-              {GOALS.map((goal) => {
-                const active = profile.goals.includes(goal.id);
-                return (
-                  <TouchableOpacity
-                    key={goal.id}
-                    style={[
-                      styles.goalChip,
-                      { borderColor: active ? colors.accent : colors.border },
-                      active && { backgroundColor: colors.accentDim },
-                    ]}
-                    onPress={() => toggleGoal(goal.id)}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons
-                      name={goal.icon}
-                      size={14}
-                      color={active ? colors.accent : colors.textSecondary}
-                    />
-                    <Text style={[styles.goalLabel, { color: active ? colors.accent : colors.textSecondary }]}>
-                      {goal.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionHeaderLabel, { color: colors.textTertiary }]}>OBJECTIVES</Text>
+              <TouchableOpacity
+                onPress={() => setShowAddObjective(true)}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                style={styles.addObjectiveBtn}
+              >
+                <Ionicons name="add" size={20} color={colors.accent} />
+              </TouchableOpacity>
             </View>
+
+            {profile.objectives.length === 0 ? (
+              <View style={styles.emptyObjectives}>
+                <TouchableOpacity
+                  style={[styles.emptyAddBtn, { borderColor: colors.accent, backgroundColor: colors.accentDim }]}
+                  onPress={() => setShowAddObjective(true)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="add-outline" size={16} color={colors.accent} />
+                  <Text style={[styles.emptyAddText, { color: colors.accent }]}>Add an objective</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.objectivesList}>
+                {profile.objectives.map((objective) => (
+                  <ObjectiveCard
+                    key={objective.id}
+                    objective={objective}
+                    progress={computeProgress(objective, { logs, profile })}
+                    onDelete={deleteObjective}
+                  />
+                ))}
+              </View>
+            )}
           </View>
 
           {/* Migrate data lives in Settings → General */}
@@ -194,6 +218,12 @@ export default function ProfileScreen() {
       <Modal visible={showSettings} animationType="slide" onRequestClose={() => setShowSettings(false)}>
         <SettingsScreen onClose={() => setShowSettings(false)} />
       </Modal>
+
+      <AddObjectiveModal
+        visible={showAddObjective}
+        onClose={() => setShowAddObjective(false)}
+        onCreate={addObjective}
+      />
 
       <CoachChat visible={showCoach} onClose={() => setShowCoach(false)} />
     </SafeAreaView>
@@ -246,23 +276,44 @@ const styles = StyleSheet.create({
   fieldLabel: { ...Typography.body, width: 80 },
   fieldInput: { flex: 1, ...Typography.body, textAlign: 'right' },
   fieldUnit: { ...Typography.caption, marginLeft: 4 },
-  goalsGrid: {
+  sectionHeader: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.sm,
-    padding: Spacing.md,
-    paddingTop: 0,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
   },
-  goalChip: {
+  sectionHeaderLabel: {
+    ...Typography.tiny,
+    letterSpacing: 1.2,
+  },
+  addObjectiveBtn: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -4,
+  },
+  objectivesList: {
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
+  },
+  emptyObjectives: {
+    padding: Spacing.md,
+    paddingTop: Spacing.sm,
+    alignItems: 'center',
+  },
+  emptyAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 7,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderRadius: Radius.full,
     borderWidth: 1,
   },
-  goalLabel: { ...Typography.captionBold },
+  emptyAddText: { ...Typography.captionBold },
   fab: {
     position: 'absolute',
     bottom: Spacing.xl,

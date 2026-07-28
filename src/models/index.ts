@@ -29,12 +29,35 @@ export interface AppSettings {
   customBlockDefs: CustomBlockDef[];
 }
 
+// ─── Objectives (measurable goals) ────────────────────────────────────────────
+//
+// An Objective is an *instance* of a supported metric type. New instances of
+// the existing types can be created in-app (Add Objective form); adding a
+// brand-new metric type requires extending OBJECTIVE_METRICS in utils/objectives.ts.
+
+export type ObjectiveMetricType = 'max_reps' | 'max_weight' | 'body_fat';
+
+export interface Objective {
+  id: string;
+  metricType: ObjectiveMetricType;
+  /** Target value to reach: reps (max_reps), kg (max_weight), or % (body_fat). */
+  target: number;
+  /** Required for max_reps; optional scope for max_weight. Free-form name from
+   *  the exercise library (matched against ItemLog.exerciseName). */
+  exerciseName?: string;
+  createdAt: string; // ISO
+}
+
 export interface UserProfile {
   name: string;
   weightKg?: number;
   heightCm?: number;
   birthYear?: number;
+  bodyFatPct?: number;
+  /** Legacy simple goal tags — still read by the AI coach context + Supabase sync.
+   *  Kept for backward compatibility; the UI now uses `objectives` instead. */
   goals: string[];
+  objectives: Objective[];
 }
 
 export const DEFAULT_BLOCK_DEFS: CustomBlockDef[] = [
@@ -53,6 +76,27 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export const DEFAULT_PROFILE: UserProfile = {
   name: '',
   goals: [],
+  objectives: [
+    {
+      id: 'seed-pullups-20',
+      metricType: 'max_reps',
+      target: 20,
+      exerciseName: 'Pull-up',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'seed-bodyfat-10',
+      metricType: 'body_fat',
+      target: 10,
+      createdAt: '2024-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'seed-kettlebell-24',
+      metricType: 'max_weight',
+      target: 24,
+      createdAt: '2024-01-01T00:00:00.000Z',
+    },
+  ],
 };
 
 // ─── Exercise Library ─────────────────────────────────────────────────────────
