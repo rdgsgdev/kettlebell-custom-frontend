@@ -548,7 +548,11 @@ export default function HistoryScreen() {
   const styles = makeStyles(colors);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [muscleFilter, setMuscleFilter] = useState<'week' | 'month'>('month');
-  const [heatmapTemplateId, setHeatmapTemplateId] = useState<string | null>(null);
+  // "All" is the default filter: it sums up every workout execution (including
+  // archived ones). Archived workouts are intentionally excluded from the chip
+  // list (see templatesWithLogs filtering below), but their sessions are still
+  // counted by the "All" view.
+  const [heatmapTemplateId, setHeatmapTemplateId] = useState<string | null>('all');
 
   const workoutDates = logs.map((l) => l.startedAt);
   const filteredLogs = selectedDate
@@ -602,15 +606,15 @@ export default function HistoryScreen() {
     return templates.filter((t) => loggedIds.has(t.id));
   }, [templates, logs]);
 
-  // Default to the first template with logs (or the first template overall) if
-  // the user hasn't picked one, or if the previously-picked template was deleted.
-  // The 'all' sentinel (combined view) is allowed through directly.
+  // Default to "All" (combined view) if the user hasn't picked one, or if the
+  // previously-picked template was deleted. The 'all' sentinel sums up every
+  // workout execution, including archived-template sessions.
   const effectiveHeatmapId = useMemo(() => {
     if (heatmapTemplateId === 'all') return 'all';
     if (heatmapTemplateId && templatesWithLogs.some((t) => t.id === heatmapTemplateId)) {
       return heatmapTemplateId;
     }
-    return templatesWithLogs[0]?.id ?? null;
+    return 'all';
   }, [heatmapTemplateId, templatesWithLogs]);
 
   // Count sessions per day for the selected template. For 'all', every log is
@@ -768,8 +772,10 @@ export default function HistoryScreen() {
               <View style={[styles.chartCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 <View style={styles.chartTitleRow}>
                   <Text style={styles.chartTitle}>FREQUENCY</Text>
-                  {/* Template selector: "All" (combined, incl. archived) + per-template chips.
-                      Always render the selector so "All" is reachable even with one template. */}
+                  {/* Template selector: "All" (combined, incl. archived) + non-archived
+                      per-template chips. Archived workouts are hidden from the list but
+                      their sessions are still summed in the "All" view. "All" is always
+                      rendered so it stays reachable even with one template. */}
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.heatmapSelectorScroll}>
                     <TouchableOpacity
                       key="all"
@@ -791,7 +797,7 @@ export default function HistoryScreen() {
                         All
                       </Text>
                     </TouchableOpacity>
-                    {templatesWithLogs.map((t) => (
+                    {templatesWithLogs.filter((t) => !t.archived).map((t) => (
                       <TouchableOpacity
                         key={t.id}
                         onPress={() => setHeatmapTemplateId(t.id)}
@@ -809,7 +815,7 @@ export default function HistoryScreen() {
                           ]}
                           numberOfLines={1}
                         >
-                          {t.name}{t.archived ? ' (archived)' : ''}
+                          {t.name}
                         </Text>
                       </TouchableOpacity>
                     ))}
