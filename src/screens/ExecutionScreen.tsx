@@ -24,6 +24,10 @@ import { generateId, formatDuration, formatCountdown, blockDim, getBlockDisplayC
 import { scheduleAlarm, cancelAlarm, scheduleRestOverNotification, cancelRestOverNotification } from '../utils/notifications';
 import NumericInput from '../components/common/NumericInput';
 import ExerciseDetailModal from '../components/exercises/ExerciseDetailModal';
+import QuickTimerConfigModal, {
+  QuickTimerKind,
+  QuickTimerConfig,
+} from '../components/execution/QuickTimerConfigModal';
 
 type Phase = 'idle' | 'exercise' | 'rest' | 'emom' | 'done' | 'stopped';
 
@@ -137,49 +141,73 @@ function buildAdhocTemplate(name: string, block: WorkoutBlock): WorkoutTemplate 
   };
 }
 
-/** Count-up stopwatch (e.g. jump rope / boxing) — stopped manually. */
-function buildCountupAdhoc(): WorkoutTemplate {
+/** Count-up stopwatch (e.g. jump rope / boxing) — stopped manually. Exercises
+ *  are optional; if none are passed, a single placeholder item keeps the timer
+ *  runnable as a pure stopwatch (the original quick-timer behavior). */
+function buildCountupAdhoc(items?: WorkoutItem[]): WorkoutTemplate {
+  const stamped = (items ?? []).map((it) => ({ ...it, executionType: 'countup' as const }));
+  const blockItems: WorkoutItem[] = stamped.length > 0
+    ? stamped
+    : [{
+        id: generateId(),
+        exerciseName: 'Count-up',
+        repMode: 'bilateral',
+        reps: 0,
+        weight: 0,
+        restTime: 0,
+        executionType: 'countup',
+      }];
   return buildAdhocTemplate('Quick Timer', {
     id: generateId(),
     type: 'finisher',
-    items: [{
-      id: generateId(),
-      exerciseName: 'Count-up',
-      repMode: 'bilateral',
-      reps: 0,
-      weight: 0,
-      restTime: 0,
-      executionType: 'countup',
-    }],
+    items: blockItems,
   });
 }
 
-/** Juarez Valley ladder — single exercise, 10 starting reps (10 rounds). */
-function buildJuarezAdhoc(): WorkoutTemplate {
+/** Juarez Valley ladder. `startingReps` (= rounds) is required; superset toggles
+ *  a 2-exercise alternating ladder. Exercises are optional. */
+function buildJuarezAdhoc(startingReps: number, superset: boolean, items?: WorkoutItem[]): WorkoutTemplate {
+  const blockItems: WorkoutItem[] = (items ?? []).length > 0
+    ? items!
+    : [{
+        id: generateId(),
+        exerciseName: 'Exercise',
+        repMode: 'bilateral',
+        reps: 0,
+        weight: 0,
+        restTime: 0,
+      }];
   return buildAdhocTemplate('Quick Juarez', {
     id: generateId(),
     type: 'juarez',
-    juarezStartingReps: 10,
-    juarezSuperset: false,
-    items: [{
-      id: generateId(),
-      exerciseName: 'Exercise',
-      repMode: 'bilateral',
-      reps: 0,
-      weight: 0,
-      restTime: 0,
-    }],
+    juarezStartingReps: startingReps,
+    juarezSuperset: superset,
+    items: blockItems,
   });
 }
 
-/** EMOM timer — 10 minutes, no cycling exercises (pure timer). */
-function buildEmomAdhoc(): WorkoutTemplate {
+/** EMOM timer. `minutes` (total duration) is required; exercises cycle per
+ *  minute and are optional (empty = pure timer). */
+function buildEmomAdhoc(minutes: number, items?: WorkoutItem[]): WorkoutTemplate {
   return buildAdhocTemplate('Quick EMOM', {
     id: generateId(),
     type: 'emom',
-    emomMinutes: 10,
-    items: [],
+    emomMinutes: minutes,
+    items: items ?? [],
   });
+}
+
+/** Dispatches a quick-timer config (from QuickTimerConfigModal) to the matching
+ *  ad-hoc template builder. */
+function buildFromConfig(cfg: QuickTimerConfig): WorkoutTemplate {
+  switch (cfg.kind) {
+    case 'countup':
+      return buildCountupAdhoc(cfg.items);
+    case 'juarez':
+      return buildJuarezAdhoc(cfg.juarezStartingReps!, cfg.juarezSuperset ?? false, cfg.items);
+    case 'emom':
+      return buildEmomAdhoc(cfg.emomMinutes!, cfg.items);
+  }
 }
 
 export default function ExecutionScreen() {
@@ -192,6 +220,9 @@ export default function ExecutionScreen() {
   // real template so the execution engine runs the on-the-fly workout. Cleared
   // when the workout finishes/is discarded, returning to the normal selector.
   const [adhocTemplate, setAdhocTemplate] = useState<WorkoutTemplate | null>(null);
+  // Which quick-timer config modal is open (countup / juarez / emom), or null
+  // when closed. Opening it lets the user configure the timer before starting.
+  const [configKind, setConfigKind] = useState<QuickTimerKind | null>(null);
   const template = adhocTemplate ?? templates.find(
     (t) => t.id === (selectedTemplateId ?? activeTemplates[0]?.id),
   ) ?? null;
@@ -1383,6 +1414,7 @@ export default function ExecutionScreen() {
 
   if (phase === 'idle') {
     return (
+      <>
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
         <View style={styles.header}>
           <Text style={[styles.title, { color: colors.textPrimary }]}>Execution</Text>
@@ -1392,7 +1424,7 @@ export default function ExecutionScreen() {
           <View style={styles.quickTimersRow}>
             <TouchableOpacity
               style={[styles.quickTimerBtn, { backgroundColor: `${colors.accent}22`, borderColor: `${colors.accent}55` }]}
-              onPress={() => startAdhoc(buildCountupAdhoc())}
+              onPress={() => setConfigKind('countup')}
               activeOpacity={0.8}
             >
               <Ionicons name="stopwatch-outline" size={20} color={colors.accent} />
@@ -1400,7 +1432,7 @@ export default function ExecutionScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.quickTimerBtn, { backgroundColor: '#2DD4BF22', borderColor: '#2DD4BF55' }]}
-              onPress={() => startAdhoc(buildJuarezAdhoc())}
+              onPress={() => setConfigKind('juarez')}
               activeOpacity={0.8}
             >
               <Ionicons name="trending-down-outline" size={20} color="#2DD4BF" />
@@ -1408,7 +1440,7 @@ export default function ExecutionScreen() {
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.quickTimerBtn, { backgroundColor: '#FBBF2422', borderColor: '#FBBF2444' }]}
-              onPress={() => startAdhoc(buildEmomAdhoc())}
+              onPress={() => setConfigKind('emom')}
               activeOpacity={0.8}
             >
               <Ionicons name="repeat-outline" size={20} color="#FBBF24" />
@@ -1524,7 +1556,19 @@ export default function ExecutionScreen() {
           )}
         </View>
       </SafeAreaView>
-    );
+
+      {/* ── Quick-timer config modal (countup / juarez / emom) ── */}
+      <QuickTimerConfigModal
+        kind={configKind ?? 'countup'}
+        visible={configKind !== null}
+        onCancel={() => setConfigKind(null)}
+        onStart={(cfg) => {
+          setConfigKind(null);
+          startAdhoc(buildFromConfig(cfg));
+        }}
+      />
+    </>
+  );
   }
 
   if (phase === 'done' || phase === 'stopped') {

@@ -548,6 +548,9 @@ export default function HistoryScreen() {
   const styles = makeStyles(colors);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [muscleFilter, setMuscleFilter] = useState<'week' | 'month'>('month');
+  // Collapsible log list — mirrors the archived-workouts section in
+  // WorkoutScreen: collapsed by default, with a chevron + count header.
+  const [showHistory, setShowHistory] = useState(false);
   // "All" is the default filter: it sums up every workout execution (including
   // archived ones). Archived workouts are intentionally excluded from the chip
   // list (see templatesWithLogs filtering below), but their sessions are still
@@ -883,7 +886,7 @@ export default function HistoryScreen() {
           </>
         )}
 
-        {/* Log list */}
+        {/* Log list — collapsed under a header, like archived workouts */}
         {logs.length === 0 ? (
           <EmptyState
             icon="stats-chart-outline"
@@ -891,10 +894,28 @@ export default function HistoryScreen() {
             subtitle={'Complete a workout on the Execution tab\nand tap "Log Now" to record it here.'}
           />
         ) : filteredLogs.length === 0 ? null : (
-          <View style={styles.logList}>
-            {filteredLogs.map((log) => (
-              <LogCard key={log.id} log={log} onDelete={() => handleDelete(log.id)} onUpdate={handleUpdate} />
-            ))}
+          <View style={styles.logSection}>
+            <TouchableOpacity
+              style={styles.logHeader}
+              onPress={() => setShowHistory((v) => !v)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={showHistory ? 'chevron-down' : 'chevron-forward'}
+                size={14}
+                color={colors.textTertiary}
+              />
+              <Text style={[styles.logHeaderText, { color: colors.textTertiary }]}>
+                HISTORY ({filteredLogs.length})
+              </Text>
+            </TouchableOpacity>
+            {showHistory && (
+              <View style={styles.logList}>
+                {filteredLogs.map((log) => (
+                  <LogCard key={log.id} log={log} onDelete={() => handleDelete(log.id)} onUpdate={handleUpdate} />
+                ))}
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
@@ -1027,5 +1048,22 @@ function makeStyles(c: typeof Colors) {
     noLogsOnDay: { ...Typography.caption, color: c.textTertiary, paddingHorizontal: Spacing.sm },
 
     logList: { paddingHorizontal: Spacing.lg, paddingVertical: Spacing.md, gap: Spacing.sm },
+
+    // Collapsible log-list header — mirrors the archived-workouts header
+    logSection: {
+      marginTop: Spacing.lg,
+    },
+    logHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: Spacing.sm,
+      paddingHorizontal: Spacing.lg,
+    },
+    logHeaderText: {
+      ...Typography.tiny,
+      letterSpacing: 1,
+      fontWeight: '600',
+    },
   });
 }
