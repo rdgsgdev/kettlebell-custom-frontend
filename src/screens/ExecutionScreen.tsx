@@ -18,7 +18,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
-import { WorkoutItem, WorkoutLog, ItemLog } from '../models';
+import { WorkoutItem, WorkoutBlock, WorkoutTemplate, WorkoutLog, ItemLog } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
 import { generateId, formatDuration, formatCountdown, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, getExecutionType } from '../utils/helpers';
 import { scheduleAlarm, cancelAlarm, scheduleRestOverNotification, cancelRestOverNotification } from '../utils/notifications';
@@ -74,14 +74,19 @@ function juarezStepInfo(
 // ── Alarm state persistence ──────────────────────────────────────────────────
 // The alarm countdown lives in component state, which is lost when the app is
 // closed/relaunches — yet the OS-scheduled notification keeps ticking and will
-// fire. We persist the wall-clock fire timestamp (+ paused state) so that on
-// reopen we can recompute the remaining seconds and show the alarm card again.
+// fire. We persist the wall-clock fire timestamp (+ paused state + notification
+// id) so that on reopen we can recompute the remaining seconds and show the
+// alarm card again. The alarm is a standalone countdown independent of which
+// workout (if any) is running, so restore is NOT gated on the selected template
+// (after a full relaunch the picker selection is lost and `template` may have
+// defaulted to a different one — or be null for an ad-hoc/quick-timer alarm).
 const ALARM_STATE_KEY = '@kbc/alarmState';
 interface PersistedAlarmState {
-  templateId: string;   // only restore for the workout that started the alarm
+  templateId: string;   // the workout that started the alarm (info only)
   fireAt: number;       // wall-clock ms when the alarm is due to fire
   paused: boolean;      // true if the user paused (fireAt is stale until resume)
   pausedRemainingSecs: number; // remaining seconds at pause time (used on resume)
+  notifId: string | null;      // OS notification id (so cancel works after relaunch)
 }
 async function saveAlarmState(state: PersistedAlarmState | null): Promise<void> {
   try {
@@ -116,13 +121,78 @@ interface SavedState {
   exerciseTimerActive: boolean;
 }
 
+// ── Ad-hoc (quick-timer) template builders ───────────────────────────────────
+// These synthesize a throwaway WorkoutTemplate so the existing execution engine
+// (which keys off `template` everywhere) can run an on-the-fly workout without a
+// saved template. The synthetic id is non-empty so it persists cleanly to both
+// SQLite (plain TEXT column) and Supabase (empty→null coercion avoided).
+function buildAdhocTemplate(name: string, block: WorkoutBlock): WorkoutTemplate {
+  const now = new Date().toISOString();
+  return {
+    id: 'adhoc-' + generateId(),
+    name,
+    blocks: [block],
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** Count-up stopwatch (e.g. jump rope / boxing) — stopped manually. */
+function buildCountupAdhoc(): WorkoutTemplate {
+  return buildAdhocTemplate('Quick Timer', {
+    id: generateId(),
+    type: 'finisher',
+    items: [{
+      id: generateId(),
+      exerciseName: 'Count-up',
+      repMode: 'bilateral',
+      reps: 0,
+      weight: 0,
+      restTime: 0,
+      executionType: 'countup',
+    }],
+  });
+}
+
+/** Juarez Valley ladder — single exercise, 10 starting reps (10 rounds). */
+function buildJuarezAdhoc(): WorkoutTemplate {
+  return buildAdhocTemplate('Quick Juarez', {
+    id: generateId(),
+    type: 'juarez',
+    juarezStartingReps: 10,
+    juarezSuperset: false,
+    items: [{
+      id: generateId(),
+      exerciseName: 'Exercise',
+      repMode: 'bilateral',
+      reps: 0,
+      weight: 0,
+      restTime: 0,
+    }],
+  });
+}
+
+/** EMOM timer — 10 minutes, no cycling exercises (pure timer). */
+function buildEmomAdhoc(): WorkoutTemplate {
+  return buildAdhocTemplate('Quick EMOM', {
+    id: generateId(),
+    type: 'emom',
+    emomMinutes: 10,
+    items: [],
+  });
+}
+
 export default function ExecutionScreen() {
   const { templates, activeWorkoutIds, saveLog, exercises } = useAppContext();
   const { colors } = useSettings();
   const styles = makeStyles(colors);
   const activeTemplates = templates.filter((t) => activeWorkoutIds.includes(t.id));
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const template = templates.find(
+  // Ad-hoc (quick-timer) template — when set, takes precedence over the selected
+  // real template so the execution engine runs the on-the-fly workout. Cleared
+  // when the workout finishes/is discarded, returning to the normal selector.
+  const [adhocTemplate, setAdhocTemplate] = useState<WorkoutTemplate | null>(null);
+  const template = adhocTemplate ?? templates.find(
     (t) => t.id === (selectedTemplateId ?? activeTemplates[0]?.id),
   ) ?? null;
 
@@ -168,6 +238,15 @@ export default function ExecutionScreen() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alarmIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const alarmCountdownSecsRef = useRef<number>(0);
+  // Wall-clock timestamp (ms) when the running alarm is due to fire; null while
+  // paused or inactive. Mirrors the persisted `fireAt` so the on-screen countdown
+  // can be snapped back to the true remaining time when the app returns to the
+  // foreground (JS intervals are suspended while backgrounded).
+  const alarmFireAtRef = useRef<number | null>(null);
+  // Fresh-value mirror of `alarmCountdownPaused` so the AppState foreground
+  // re-sync closure (registered once on mount) sees the current paused state
+  // instead of a stale initial value.
+  const alarmCountdownPausedRef = useRef(false);
   const phaseRef = useRef(phase);
   const blockIdxRef = useRef(blockIdx);
   const emomSecondsRef = useRef(emomSeconds);
@@ -413,9 +492,16 @@ export default function ExecutionScreen() {
   const startAlarmInterval = useCallback(() => {
     stopAlarmInterval();
     alarmIntervalRef.current = setInterval(() => {
-      const s = alarmCountdownSecsRef.current - 1;
+      // Wall-clock-correct remaining (JS intervals freeze while backgrounded):
+      // when we have a fire timestamp, derive the countdown from `Date.now()`
+      // instead of blindly subtracting one tick. Falls back to tick decrement
+      // only if no timestamp was set (defensive — always set on start/resume).
+      const s = alarmFireAtRef.current != null
+        ? Math.max(0, Math.ceil((alarmFireAtRef.current - Date.now()) / 1000))
+        : alarmCountdownSecsRef.current - 1;
       if (s <= 0) {
         stopAlarmInterval();
+        alarmFireAtRef.current = null;
         setAlarmCountdownSecs(0);
         alarmCountdownSecsRef.current = 0;
         // Alarm fired — clear persisted state so a later reopen doesn't restore it.
@@ -461,55 +547,90 @@ export default function ExecutionScreen() {
   // ── Restore alarm countdown on mount ────────────────────────────────────────
   // The OS-scheduled notification survives app close, but the in-memory countdown
   // state is lost. Recompute remaining seconds from the persisted fire timestamp
-  // so the alarm card reappears with the correct time (and keeps ticking). Runs
-  // once when the template is first available.
+  // so the alarm card reappears with the correct time (and keeps ticking). The
+  // alarm is a standalone countdown, so it is restored regardless of which
+  // template is currently selected — after a full relaunch the picker selection
+  // is gone and `template` may not be the one that started the alarm (or may be
+  // null for an ad-hoc/quick-timer). Runs once on mount.
   const alarmRestoredRef = useRef(false);
   useEffect(() => {
-    if (alarmRestoredRef.current || !template) return;
+    if (alarmRestoredRef.current) return;
     alarmRestoredRef.current = true;
     (async () => {
       const saved = await loadAlarmState();
-      if (!saved || saved.templateId !== template.id) return;
+      if (!saved) return;
+      // Restore the notification id so the in-workout indicator and Cancel still
+      // work, and so stop/finish can cancel the still-pending OS notification.
+      if (saved.notifId) setAlarmNotifId(saved.notifId);
       if (saved.paused) {
         // Alarm was paused when the app closed — restore paused with its remaining.
         const remaining = Math.max(0, Math.round(saved.pausedRemainingSecs));
         alarmCountdownSecsRef.current = remaining;
         setAlarmCountdownSecs(remaining);
         setAlarmCountdownPaused(true);
+        alarmCountdownPausedRef.current = true;
+        alarmFireAtRef.current = null;
       } else {
         const remaining = Math.ceil((saved.fireAt - Date.now()) / 1000);
         if (remaining <= 0) {
           // Already fired while the app was closed — nothing left to show.
           saveAlarmState(null);
+          setAlarmNotifId(null);
         } else {
           alarmCountdownSecsRef.current = remaining;
           setAlarmCountdownSecs(remaining);
           setAlarmCountdownPaused(false);
+          alarmCountdownPausedRef.current = false;
+          alarmFireAtRef.current = saved.fireAt;
           startAlarmInterval();
         }
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [template]);
+  }, []);
 
-  // ── Foreground re-sync: when returning to the app during a rest, recompute the
-  // remaining seconds from the wall-clock end timestamp (JS intervals are
-  // suspended while backgrounded, so the tick count drifted / froze). If rest
-  // already ended while away (the "rest over" notification also fired), finish
-  // the rest now.
+  // ── Foreground re-sync: when returning to the app, recompute the displayed
+  // countdowns from their wall-clock timestamps (JS intervals are suspended
+  // while backgrounded, so the tick count drifted / froze). Handles both the
+  // rest countdown and the alarm countdown:
+  //  - rest: if it already ended while away (the "rest over" notification also
+  //    fired), finish the rest now.
+  //  - alarm: snap the displayed remaining to the true time; if it already
+  //    fired while away, finalize it (the OS notification fired regardless).
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state !== 'active') return;
-      if (phaseRef.current !== 'rest' || restEndsAtRef.current == null) return;
-      const remaining = Math.ceil((restEndsAtRef.current - Date.now()) / 1000);
-      if (remaining <= 0) {
-        // Rest ended while backgrounded — advance to the next set/exercise.
-        setRestSeconds(0);
-        endRestNow();
-      } else {
-        // Snap the displayed countdown to the real remaining time.
-        setRestSeconds(remaining);
-        restSecondsRef.current = remaining;
+
+      // Rest re-sync.
+      if (phaseRef.current === 'rest' && restEndsAtRef.current != null) {
+        const remaining = Math.ceil((restEndsAtRef.current - Date.now()) / 1000);
+        if (remaining <= 0) {
+          // Rest ended while backgrounded — advance to the next set/exercise.
+          setRestSeconds(0);
+          endRestNow();
+        } else {
+          // Snap the displayed countdown to the real remaining time.
+          setRestSeconds(remaining);
+          restSecondsRef.current = remaining;
+        }
+      }
+
+      // Alarm re-sync (only when running, not paused). Without this the on-screen
+      // countdown freezes while backgrounded even though the OS alarm still fires.
+      if (alarmFireAtRef.current != null && !alarmCountdownPausedRef.current) {
+        const remaining = Math.max(0, Math.ceil((alarmFireAtRef.current - Date.now()) / 1000));
+        if (remaining <= 0) {
+          // Alarm fired while the app was in the background.
+          stopAlarmInterval();
+          alarmFireAtRef.current = null;
+          setAlarmCountdownSecs(0);
+          alarmCountdownSecsRef.current = 0;
+          saveAlarmState(null);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        } else {
+          setAlarmCountdownSecs(remaining);
+          alarmCountdownSecsRef.current = remaining;
+        }
       }
     });
     return () => sub.remove();
@@ -584,9 +705,10 @@ export default function ExecutionScreen() {
   // Actions
   // ─────────────────────────────────────────────────────────────────────────────
 
-  const handleStart = () => {
-    if (!template) return;
-    const firstBlock = template.blocks[0];
+  const handleStart = (explicitTemplate?: WorkoutTemplate) => {
+    const tpl = explicitTemplate ?? template;
+    if (!tpl) return;
+    const firstBlock = tpl.blocks[0];
     setStartedAt(new Date());
     setWorkoutEndedAt(null);
     setBlockIdx(0);
@@ -626,6 +748,15 @@ export default function ExecutionScreen() {
     }
   };
 
+  // ── Start an ad-hoc (quick-timer) workout ──────────────────────────────────
+  // Sets the synthetic template so the engine (and templateRef mirror) see it,
+  // and passes it explicitly to handleStart so the workout begins this tick
+  // rather than waiting for the state update to propagate.
+  const startAdhoc = (adhoc: WorkoutTemplate) => {
+    setAdhocTemplate(adhoc);
+    handleStart(adhoc);
+  };
+
   // ── Standalone alarm countdown actions ──────────────────────────────────────
 
   const handleStartAlarm = useCallback(async () => {
@@ -634,13 +765,14 @@ export default function ExecutionScreen() {
     alarmCountdownSecsRef.current = seconds;
     setAlarmCountdownSecs(seconds);
     setAlarmCountdownPaused(false);
+    alarmCountdownPausedRef.current = false;
     const fireAt = Date.now() + seconds * 1000;
-    scheduleAlarm(template.alarmMinutes, template.name).then((id) => {
-      setAlarmNotifId(id);
-    }).catch(() => {});
+    alarmFireAtRef.current = fireAt;
+    const id = await scheduleAlarm(template.alarmMinutes, template.name).catch(() => null);
+    setAlarmNotifId(id);
     // Persist so the alarm card reappears (with the right remaining time) after
     // the app is closed and reopened — the OS notification fires regardless.
-    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0 });
+    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0, notifId: id });
     startAlarmInterval();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
   }, [template, startAlarmInterval]);
@@ -648,6 +780,8 @@ export default function ExecutionScreen() {
   const handlePauseAlarm = useCallback(() => {
     stopAlarmInterval();
     setAlarmCountdownPaused(true);
+    alarmCountdownPausedRef.current = true;
+    alarmFireAtRef.current = null; // freeze until resume
     setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
     // Persist the paused remaining so resume (even after app reopen) is correct.
     saveAlarmState({
@@ -655,6 +789,7 @@ export default function ExecutionScreen() {
       fireAt: 0,
       paused: true,
       pausedRemainingSecs: Math.max(0, alarmCountdownSecsRef.current),
+      notifId: null, // cancelled on pause; re-scheduled on resume
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, [stopAlarmInterval, template]);
@@ -662,21 +797,25 @@ export default function ExecutionScreen() {
   const handleResumeAlarm = useCallback(() => {
     if (alarmCountdownSecsRef.current <= 0 || !template) return;
     setAlarmCountdownPaused(false);
+    alarmCountdownPausedRef.current = false;
     const remaining = alarmCountdownSecsRef.current;
     const fireAt = Date.now() + remaining * 1000;
+    alarmFireAtRef.current = fireAt;
     scheduleAlarm(remaining / 60, template.name).then((id) => {
       setAlarmNotifId(id);
     }).catch(() => {});
-    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0 });
+    saveAlarmState({ templateId: template.id, fireAt, paused: false, pausedRemainingSecs: 0, notifId: null });
     startAlarmInterval();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, [template, startAlarmInterval]);
 
   const handleStopAlarm = useCallback(() => {
     stopAlarmInterval();
+    alarmFireAtRef.current = null;
     setAlarmCountdownSecs(null);
     alarmCountdownSecsRef.current = 0;
     setAlarmCountdownPaused(false);
+    alarmCountdownPausedRef.current = false;
     setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
     saveAlarmState(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -1029,6 +1168,7 @@ export default function ExecutionScreen() {
   const handleDiscard = () => {
     savedStateRef.current = null;
     stopTimer();
+    setAdhocTemplate(null);
     // Cancel any pending rest-over notification so it doesn't fire after discard.
     cancelRestOverNotification(restNotifIdRef.current);
     setRestNotifId(null);
@@ -1170,6 +1310,7 @@ export default function ExecutionScreen() {
     setHasSaved(true);
     savedStateRef.current = null;
     stopTimer();
+    setAdhocTemplate(null);
     setPhase('idle');
     setNote('');
     setActualReps({});
@@ -1240,23 +1381,6 @@ export default function ExecutionScreen() {
   // Render
   // ─────────────────────────────────────────────────────────────────────────────
 
-  if (!template && activeTemplates.length === 0) {
-    return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
-        <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.textPrimary }]}>Execution</Text>
-        </View>
-        <View style={styles.emptyCenter}>
-          <Ionicons name="timer-outline" size={72} color={colors.textTertiary} />
-          <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>No workout selected</Text>
-          <Text style={[styles.emptySubtitle, { color: colors.textTertiary }]}>
-            Go to the Workout tab, select a template, then come back here to run it.
-          </Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   if (phase === 'idle') {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -1264,54 +1388,86 @@ export default function ExecutionScreen() {
           <Text style={[styles.title, { color: colors.textPrimary }]}>Execution</Text>
         </View>
         <ScrollView style={styles.flex} contentContainerStyle={styles.idleScrollContent}>
-          {/* ── Workout picker ── */}
-          <View style={styles.pickerSection}>
-            {activeTemplates.length > 1 && (
-              <Text style={styles.pickerSectionLabel}>CHOOSE WORKOUT</Text>
-            )}
-            {activeTemplates.map((t) => {
-              const isSelected = t.id === (selectedTemplateId ?? activeTemplates[0].id);
-              return (
-                <TouchableOpacity
-                  key={t.id}
-                  style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
-                  onPress={() => setSelectedTemplateId(t.id)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons
-                    name={isSelected ? 'radio-button-on' : 'radio-button-off'}
-                    size={20}
-                    color={isSelected ? colors.accent : colors.textTertiary}
-                  />
-                  <Text style={[styles.pickerRowText, isSelected && { color: colors.accent }]}>
-                    {t.name}
-                  </Text>
-                  <Text style={styles.pickerRowMeta}>
-                    {t.blocks.reduce((s, b) => s + b.items.length, 0)} exercises
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+          {/* ── Quick timers (ad-hoc workouts) ── */}
+          <View style={styles.quickTimersRow}>
+            <TouchableOpacity
+              style={[styles.quickTimerBtn, { backgroundColor: `${colors.accent}22`, borderColor: `${colors.accent}55` }]}
+              onPress={() => startAdhoc(buildCountupAdhoc())}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="stopwatch-outline" size={20} color={colors.accent} />
+              <Text style={[styles.quickTimerBtnText, { color: colors.accent }]}>Count-up</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickTimerBtn, { backgroundColor: '#2DD4BF22', borderColor: '#2DD4BF55' }]}
+              onPress={() => startAdhoc(buildJuarezAdhoc())}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trending-down-outline" size={20} color="#2DD4BF" />
+              <Text style={[styles.quickTimerBtnText, { color: '#2DD4BF' }]}>Juarez</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickTimerBtn, { backgroundColor: '#FBBF2422', borderColor: '#FBBF2444' }]}
+              onPress={() => startAdhoc(buildEmomAdhoc())}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="repeat-outline" size={20} color="#FBBF24" />
+              <Text style={[styles.quickTimerBtnText, { color: '#FBBF24' }]}>EMOM</Text>
+            </TouchableOpacity>
           </View>
-          <View style={styles.blockSummary}>
-            {template!.blocks
-              .filter((block) => block.items.length > 0)
-              .map((block, idx, arr) => (
-                <SummaryRow
-                  key={block.id}
-                  color={getBlockDisplayColor(block)}
-                  label={getBlockDisplayLabel(block)}
-                  value={
-                    block.type === 'emom'
-                      ? `${block.items.length} exercises · ${block.emomMinutes} min`
-                      : block.type === 'juarez'
-                        ? `${block.items.length} ex · ${block.juarezStartingReps ?? 10} rounds${block.juarezSuperset ? ' superset' : ''}`
-                        : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
-                  }
-                  isLast={idx === arr.length - 1}
-                />
-              ))}
-          </View>
+
+          {/* ── Workout picker (only when there are active templates) ── */}
+          {activeTemplates.length > 0 && template && (
+            <>
+              <View style={styles.pickerSection}>
+                {activeTemplates.length > 1 && (
+                  <Text style={styles.pickerSectionLabel}>CHOOSE WORKOUT</Text>
+                )}
+                {activeTemplates.map((t) => {
+                  const isSelected = t.id === (selectedTemplateId ?? activeTemplates[0].id);
+                  return (
+                    <TouchableOpacity
+                      key={t.id}
+                      style={[styles.pickerRow, isSelected && styles.pickerRowSelected]}
+                      onPress={() => setSelectedTemplateId(t.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                        size={20}
+                        color={isSelected ? colors.accent : colors.textTertiary}
+                      />
+                      <Text style={[styles.pickerRowText, isSelected && { color: colors.accent }]}>
+                        {t.name}
+                      </Text>
+                      <Text style={styles.pickerRowMeta}>
+                        {t.blocks.reduce((s, b) => s + b.items.length, 0)} exercises
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <View style={styles.blockSummary}>
+                {template.blocks
+                  .filter((block) => block.items.length > 0)
+                  .map((block, idx, arr) => (
+                    <SummaryRow
+                      key={block.id}
+                      color={getBlockDisplayColor(block)}
+                      label={getBlockDisplayLabel(block)}
+                      value={
+                        block.type === 'emom'
+                          ? `${block.items.length} exercises · ${block.emomMinutes} min`
+                          : block.type === 'juarez'
+                            ? `${block.items.length} ex · ${block.juarezStartingReps ?? 10} rounds${block.juarezSuperset ? ' superset' : ''}`
+                            : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
+                      }
+                      isLast={idx === arr.length - 1}
+                    />
+                  ))}
+              </View>
+            </>
+          )}
         </ScrollView>
         <View style={styles.idleBottomActions}>
           {alarmCountdownSecs !== null ? (
@@ -1349,21 +1505,23 @@ export default function ExecutionScreen() {
               </View>
             </View>
           ) : null}
-          <View style={styles.startRow}>
-            <TouchableOpacity
-              style={[styles.startBtn, template!.alarmMinutes ? styles.startBtnCompact : null]}
-              onPress={handleStart}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="play" size={22} color="#fff" />
-              <Text style={styles.startBtnText}>Start Workout</Text>
-            </TouchableOpacity>
-            {template!.alarmMinutes && alarmCountdownSecs === null && (
-              <TouchableOpacity style={styles.alarmFab} onPress={handleStartAlarm} activeOpacity={0.8}>
-                <Ionicons name="alarm-outline" size={28} color="#fff" />
+          {template && (
+            <View style={styles.startRow}>
+              <TouchableOpacity
+                style={[styles.startBtn, template.alarmMinutes ? styles.startBtnCompact : null]}
+                onPress={() => handleStart()}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="play" size={22} color="#fff" />
+                <Text style={styles.startBtnText}>Start Workout</Text>
               </TouchableOpacity>
-            )}
-          </View>
+              {template.alarmMinutes && alarmCountdownSecs === null && (
+                <TouchableOpacity style={styles.alarmFab} onPress={handleStartAlarm} activeOpacity={0.8}>
+                  <Ionicons name="alarm-outline" size={28} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </View>
       </SafeAreaView>
     );
@@ -1522,6 +1680,7 @@ export default function ExecutionScreen() {
                   // fresh or pick another workout.
                   savingRef.current = false;
                   setHasSaved(false);
+                  setAdhocTemplate(null);
                   setSelectedTemplateId(null);
                   setStartedAt(null);
                   setPhase('idle');
@@ -2233,6 +2392,10 @@ function makeStyles(c: typeof Colors) {
   startBtnText: { ...Typography.h3, color: '#fff' },
   startRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   startBtnCompact: { flex: 1 },
+  // Quick-timer (ad-hoc) buttons row — 3 rounded buttons above the workout picker.
+  quickTimersRow: { flexDirection: 'row', gap: Spacing.sm, width: '100%' },
+  quickTimerBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: Radius.xl, borderWidth: 1.5, paddingVertical: 14 },
+  quickTimerBtnText: { ...Typography.captionBold },
   alarmFab: { width: 56, height: 56, borderRadius: 28, backgroundColor: c.warning, alignItems: 'center', justifyContent: 'center', shadowColor: c.warning, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 10 },
   alarmCountdown: { backgroundColor: c.warningDim, borderRadius: Radius.lg, padding: Spacing.md, gap: Spacing.sm },
   alarmCountdownHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
