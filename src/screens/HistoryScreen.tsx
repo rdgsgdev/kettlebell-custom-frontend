@@ -595,26 +595,32 @@ export default function HistoryScreen() {
 
   // ─── Frequency heatmap data ─────────────────────────────────────────────────
   // Templates that have at least one log — these are the dropdown options.
+  // Includes archived templates (so their history is still explorable); the
+  // "All" option (sentinel 'all') further combines every template's sessions.
   const templatesWithLogs = useMemo(() => {
     const loggedIds = new Set(logs.map((l) => l.templateId));
-    return templates.filter((t) => loggedIds.has(t.id) && !t.archived);
+    return templates.filter((t) => loggedIds.has(t.id));
   }, [templates, logs]);
 
   // Default to the first template with logs (or the first template overall) if
   // the user hasn't picked one, or if the previously-picked template was deleted.
+  // The 'all' sentinel (combined view) is allowed through directly.
   const effectiveHeatmapId = useMemo(() => {
+    if (heatmapTemplateId === 'all') return 'all';
     if (heatmapTemplateId && templatesWithLogs.some((t) => t.id === heatmapTemplateId)) {
       return heatmapTemplateId;
     }
     return templatesWithLogs[0]?.id ?? null;
   }, [heatmapTemplateId, templatesWithLogs]);
 
-  // Count sessions per day for the selected template.
+  // Count sessions per day for the selected template. For 'all', every log is
+  // counted (this includes archived-template sessions, since `logs` from context
+  // already contains them).
   const heatmapCounts = useMemo(() => {
     if (!effectiveHeatmapId) return {};
     const counts: Record<string, number> = {};
     logs.forEach((l) => {
-      if (l.templateId !== effectiveHeatmapId) return;
+      if (effectiveHeatmapId !== 'all' && l.templateId !== effectiveHeatmapId) return;
       const day = new Date(l.startedAt);
       const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
       counts[iso] = (counts[iso] || 0) + 1;
@@ -762,37 +768,52 @@ export default function HistoryScreen() {
               <View style={[styles.chartCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 <View style={styles.chartTitleRow}>
                   <Text style={styles.chartTitle}>FREQUENCY</Text>
-                  {/* Template selector dropdown */}
-                  {templatesWithLogs.length > 1 ? (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.heatmapSelectorScroll}>
-                      {templatesWithLogs.map((t) => (
-                        <TouchableOpacity
-                          key={t.id}
-                          onPress={() => setHeatmapTemplateId(t.id)}
+                  {/* Template selector: "All" (combined, incl. archived) + per-template chips.
+                      Always render the selector so "All" is reachable even with one template. */}
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.heatmapSelectorScroll}>
+                    <TouchableOpacity
+                      key="all"
+                      onPress={() => setHeatmapTemplateId('all')}
+                      style={[
+                        styles.heatmapChip,
+                        effectiveHeatmapId === 'all'
+                          ? { backgroundColor: colors.accentDim, borderColor: colors.accent }
+                          : { borderColor: colors.border },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.heatmapChipText,
+                          { color: effectiveHeatmapId === 'all' ? colors.accent : colors.textSecondary },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        All
+                      </Text>
+                    </TouchableOpacity>
+                    {templatesWithLogs.map((t) => (
+                      <TouchableOpacity
+                        key={t.id}
+                        onPress={() => setHeatmapTemplateId(t.id)}
+                        style={[
+                          styles.heatmapChip,
+                          t.id === effectiveHeatmapId
+                            ? { backgroundColor: colors.accentDim, borderColor: colors.accent }
+                            : { borderColor: colors.border },
+                        ]}
+                      >
+                        <Text
                           style={[
-                            styles.heatmapChip,
-                            t.id === effectiveHeatmapId
-                              ? { backgroundColor: colors.accentDim, borderColor: colors.accent }
-                              : { borderColor: colors.border },
+                            styles.heatmapChipText,
+                            { color: t.id === effectiveHeatmapId ? colors.accent : colors.textSecondary },
                           ]}
+                          numberOfLines={1}
                         >
-                          <Text
-                            style={[
-                              styles.heatmapChipText,
-                              { color: t.id === effectiveHeatmapId ? colors.accent : colors.textSecondary },
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {t.name}
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  ) : (
-                    <Text style={[styles.noDataText, { fontSize: 11 }]}>
-                      {templatesWithLogs[0]?.name}
-                    </Text>
-                  )}
+                          {t.name}{t.archived ? ' (archived)' : ''}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
                 </View>
 
                 <FrequencyHeatmap counts={heatmapCounts} />
