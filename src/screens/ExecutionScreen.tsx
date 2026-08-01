@@ -141,10 +141,16 @@ function buildAdhocTemplate(name: string, block: WorkoutBlock): WorkoutTemplate 
   };
 }
 
-/** Count-up stopwatch (e.g. jump rope / boxing) — stopped manually. Exercises
- *  are optional; if none are passed, a single placeholder item keeps the timer
- *  runnable as a pure stopwatch (the original quick-timer behavior). */
-function buildCountupAdhoc(items?: WorkoutItem[]): WorkoutTemplate {
+/** Count-up stopwatch (e.g. jump rope / boxing / holds) — stopped manually.
+ *  Exercises are optional; if none are passed, a single placeholder item keeps
+ *  the timer runnable as a pure stopwatch (the original quick-timer behavior).
+ *
+ *  The block is stamped with a neutral "Count-up" custom label + accent color so
+ *  the execution badge and history don't read "Finisher" — a count-up timer is
+ *  for any timed work, not just finishers. `accentColor` is the live theme
+ *  accent (mirrors the quick-timer button color), defaulting to the dark alias. */
+function buildCountupAdhoc(items?: WorkoutItem[], accentColor?: string): WorkoutTemplate {
+  const accent = accentColor ?? Colors.accent;
   const stamped = (items ?? []).map((it) => ({ ...it, executionType: 'countup' as const }));
   const blockItems: WorkoutItem[] = stamped.length > 0
     ? stamped
@@ -161,6 +167,8 @@ function buildCountupAdhoc(items?: WorkoutItem[]): WorkoutTemplate {
     id: generateId(),
     type: 'finisher',
     items: blockItems,
+    customLabel: 'Count-up',
+    customColor: accent,
   });
 }
 
@@ -198,11 +206,12 @@ function buildEmomAdhoc(minutes: number, items?: WorkoutItem[]): WorkoutTemplate
 }
 
 /** Dispatches a quick-timer config (from QuickTimerConfigModal) to the matching
- *  ad-hoc template builder. */
-function buildFromConfig(cfg: QuickTimerConfig): WorkoutTemplate {
+ *  ad-hoc template builder. `accentColor` is the live theme accent, threaded to
+ *  the count-up builder so its badge/history use the neutral accent label. */
+function buildFromConfig(cfg: QuickTimerConfig, accentColor: string): WorkoutTemplate {
   switch (cfg.kind) {
     case 'countup':
-      return buildCountupAdhoc(cfg.items);
+      return buildCountupAdhoc(cfg.items, accentColor);
     case 'juarez':
       return buildJuarezAdhoc(cfg.juarezStartingReps!, cfg.juarezSuperset ?? false, cfg.items);
     case 'emom':
@@ -1564,7 +1573,7 @@ export default function ExecutionScreen() {
         onCancel={() => setConfigKind(null)}
         onStart={(cfg) => {
           setConfigKind(null);
-          startAdhoc(buildFromConfig(cfg));
+          startAdhoc(buildFromConfig(cfg, colors.accent));
         }}
       />
     </>
@@ -1954,7 +1963,7 @@ export default function ExecutionScreen() {
                     {isPaused
                       ? <Ionicons name="pause" size={72} color={color} />
                       : <><Text style={[styles.timerBig, { color }]}>{exerciseTimerSeconds}</Text>
-                          <Text style={styles.timerSub}>{isCountupExercise ? 'seconds (max hold)' : 'seconds'}</Text></>
+                          <Text style={styles.timerSub}>{isCountupExercise ? 'seconds elapsed' : 'seconds'}</Text></>
                     }
                   </TouchableOpacity>
                 )}
@@ -1964,9 +1973,10 @@ export default function ExecutionScreen() {
                     const t = getExecutionType(currentItem);
                     if (t === 'countup') {
                       // Value is driven by the running timer; show it live, or the
-                      // recorded value once stopped.
+                      // recorded value once stopped. Neutral "elapsed" wording —
+                      // a count-up timer fits any timed work, not just max holds.
                       const live = isDurationExercise ? `${exerciseTimerSeconds}s` : `${actualDurations[repsKey] ?? 0}s`;
-                      return <MetaPill value={live} label="MAX HOLD" color={color} />;
+                      return <MetaPill value={live} label="ELAPSED" color={color} />;
                     }
                     if (t === 'countdown') {
                       return <MetaPill value={`${currentItem.durationSeconds}s`} label="DURATION" color={color} />;
