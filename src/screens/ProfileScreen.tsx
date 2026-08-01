@@ -148,7 +148,15 @@ export default function ProfileScreen() {
 
           {/* Personal Info */}
           <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>PERSONAL INFO</Text>
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionHeaderLabel, { color: colors.textTertiary }]}>PERSONAL INFO</Text>
+              <HealthRefreshButton
+                loading={healthLoading}
+                color={colors.accent}
+                textTertiary={colors.textTertiary}
+                onPress={pullFromHealth}
+              />
+            </View>
 
             <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
               <Ionicons name="person-outline" size={16} color={colors.textTertiary} style={styles.fieldIcon} />
@@ -197,12 +205,6 @@ export default function ProfileScreen() {
                 returnKeyType="done"
               />
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>kg</Text>
-              <HealthRefreshButton
-                loading={healthLoading}
-                color={colors.accent}
-                textTertiary={colors.textTertiary}
-                onPress={pullFromHealth}
-              />
             </View>
 
             <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
@@ -239,12 +241,6 @@ export default function ProfileScreen() {
                 returnKeyType="done"
               />
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>%</Text>
-              <HealthRefreshButton
-                loading={healthLoading}
-                color={colors.accent}
-                textTertiary={colors.textTertiary}
-                onPress={pullFromHealth}
-              />
             </View>
           </View>
 
@@ -327,8 +323,9 @@ export default function ProfileScreen() {
 }
 
 /**
- * Small "pull from Apple Health" affordance shown at the end of the Weight and
- * Body fat rows. On non-iOS platforms it renders nothing (HealthKit is iOS-only).
+ * "Pull from Apple Health" affordance in the PERSONAL INFO section header — a
+ * single button that syncs weight + body fat at once (mirrors the OBJECTIVES
+ * `+` button layout). On non-iOS it renders nothing (HealthKit is iOS-only).
  */
 function HealthRefreshButton({
   loading,
@@ -346,25 +343,27 @@ function HealthRefreshButton({
     <TouchableOpacity
       onPress={onPress}
       disabled={loading}
-      hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }}
+      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
       style={healthRefreshStyles.btn}
-      accessibilityLabel="Pull from Apple Health"
+      accessibilityLabel="Sync from Apple Health"
     >
       {loading ? (
         <ActivityIndicator size="small" color={textTertiary} />
       ) : (
-        <Ionicons name="heart-outline" size={16} color={color} />
+        <Ionicons name="heart-outline" size={20} color={color} />
       )}
     </TouchableOpacity>
   );
 }
 
 const healthRefreshStyles = StyleSheet.create({
+  // Matches addObjectiveBtn so the PERSONAL INFO and OBJECTIVES headers align.
   btn: {
-    marginLeft: 2,
     width: 24,
+    height: 24,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: -4,
   },
 });
 
@@ -394,13 +393,6 @@ const styles = StyleSheet.create({
   sectionCard: {
     borderRadius: Radius.lg,
     borderWidth: 1,
-  },
-  sectionLabel: {
-    ...Typography.tiny,
-    letterSpacing: 1.2,
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
   },
   fieldRow: {
     flexDirection: 'row',
