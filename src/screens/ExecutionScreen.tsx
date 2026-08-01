@@ -205,6 +205,41 @@ function buildEmomAdhoc(minutes: number, items?: WorkoutItem[]): WorkoutTemplate
   });
 }
 
+/** PR Attempt — a single reps exercise with a target rep count, run as a normal
+ *  exercise (no timer). The user stops to record the actual reps achieved, which
+ *  can be edited (during the run via the REPS pill, or at the review screen) if
+ *  they beat or miss the target. Exercises are optional; if none are passed, a
+ *  placeholder item keeps the attempt runnable. The block uses the success
+ *  (green) color and a "PR Attempt" label so it stands out in execution + history. */
+function buildPrAdhoc(targetReps: number, items?: WorkoutItem[]): WorkoutTemplate {
+  const passed = (items ?? []).slice(0, 1).map((it) => ({
+    ...it,
+    executionType: 'reps' as const,
+    reps: targetReps,
+    sets: 1,
+    restTime: 0,
+  }));
+  const blockItems: WorkoutItem[] = passed.length > 0
+    ? passed
+    : [{
+        id: generateId(),
+        exerciseName: 'PR Attempt',
+        repMode: 'bilateral',
+        reps: targetReps,
+        weight: 0,
+        restTime: 0,
+        executionType: 'reps',
+        sets: 1,
+      }];
+  return buildAdhocTemplate('Quick PR', {
+    id: generateId(),
+    type: 'mobility',
+    items: blockItems,
+    customLabel: 'PR Attempt',
+    customColor: Colors.success,
+  });
+}
+
 /** Dispatches a quick-timer config (from QuickTimerConfigModal) to the matching
  *  ad-hoc template builder. `accentColor` is the live theme accent, threaded to
  *  the count-up builder so its badge/history use the neutral accent label. */
@@ -216,6 +251,8 @@ function buildFromConfig(cfg: QuickTimerConfig, accentColor: string): WorkoutTem
       return buildJuarezAdhoc(cfg.juarezStartingReps!, cfg.juarezSuperset ?? false, cfg.items);
     case 'emom':
       return buildEmomAdhoc(cfg.emomMinutes!, cfg.items);
+    case 'pr':
+      return buildPrAdhoc(cfg.targetReps ?? 1, cfg.items);
   }
 }
 
@@ -1455,6 +1492,14 @@ export default function ExecutionScreen() {
               <Ionicons name="repeat-outline" size={20} color="#FBBF24" />
               <Text style={[styles.quickTimerBtnText, { color: '#FBBF24' }]}>EMOM</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickTimerBtn, { backgroundColor: `${colors.success}22`, borderColor: `${colors.success}55` }]}
+              onPress={() => setConfigKind('pr')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trophy-outline" size={20} color={colors.success} />
+              <Text style={[styles.quickTimerBtnText, { color: colors.success }]}>PR</Text>
+            </TouchableOpacity>
           </View>
 
           {/* ── Workout picker (only when there are active templates) ── */}
@@ -1566,7 +1611,7 @@ export default function ExecutionScreen() {
         </View>
       </SafeAreaView>
 
-      {/* ── Quick-timer config modal (countup / juarez / emom) ── */}
+      {/* ── Quick-timer config modal (countup / juarez / emom / pr) ── */}
       <QuickTimerConfigModal
         kind={configKind ?? 'countup'}
         visible={configKind !== null}
@@ -2446,9 +2491,11 @@ function makeStyles(c: typeof Colors) {
   startBtnText: { ...Typography.h3, color: '#fff' },
   startRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   startBtnCompact: { flex: 1 },
-  // Quick-timer (ad-hoc) buttons row — 3 rounded buttons above the workout picker.
-  quickTimersRow: { flexDirection: 'row', gap: Spacing.sm, width: '100%' },
-  quickTimerBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: Radius.xl, borderWidth: 1.5, paddingVertical: 14 },
+  // Quick-timer (ad-hoc) buttons row — a wrapping 2×2 grid of rounded buttons
+  // (Count-up / Juarez / EMOM / PR) above the workout picker. Each button is
+  // 48% wide with space-between so two per row line up without overflow.
+  quickTimersRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: Spacing.sm, width: '100%' },
+  quickTimerBtn: { width: '48%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: Radius.xl, borderWidth: 1.5, paddingVertical: 14 },
   quickTimerBtnText: { ...Typography.captionBold },
   alarmFab: { width: 56, height: 56, borderRadius: 28, backgroundColor: c.warning, alignItems: 'center', justifyContent: 'center', shadowColor: c.warning, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 10 },
   alarmCountdown: { backgroundColor: c.warningDim, borderRadius: Radius.lg, padding: Spacing.md, gap: Spacing.sm },

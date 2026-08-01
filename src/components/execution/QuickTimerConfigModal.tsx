@@ -18,13 +18,14 @@ import { useSettings } from '../../context/SettingsContext';
 import BlockSection from '../workout/BlockSection';
 
 // ── Types ────────────────────────────────────────────────────────────────────
-export type QuickTimerKind = 'countup' | 'juarez' | 'emom';
+export type QuickTimerKind = 'countup' | 'juarez' | 'emom' | 'pr';
 
 export interface QuickTimerConfig {
   kind: QuickTimerKind;
   juarezStartingReps?: number; // juarez only (required)
   juarezSuperset?: boolean;    // juarez only
   emomMinutes?: number;        // emom only (required)
+  targetReps?: number;         // pr only (required) — the target rep count
   items: WorkoutItem[];        // optional exercises (all kinds)
 }
 
@@ -36,7 +37,7 @@ interface Props {
 }
 
 // Per-kind display config. Accent colors mirror the quick-timer buttons on the
-// Execution screen (Count-up = theme accent, Juarez = teal, EMOM = amber).
+// Execution screen (Count-up = theme accent, Juarez = teal, EMOM = amber, PR = success green).
 const KIND_DISPLAY: Record<
   QuickTimerKind,
   { title: string; accent: (c: typeof Colors) => string; blockLabel: string }
@@ -56,6 +57,11 @@ const KIND_DISPLAY: Record<
     accent: () => '#FBBF24',
     blockLabel: 'EMOM',
   },
+  pr: {
+    title: 'PR Attempt',
+    accent: (c) => c.success,
+    blockLabel: 'PR Attempt',
+  },
 };
 
 export default function QuickTimerConfigModal({ kind, visible, onCancel, onStart }: Props) {
@@ -70,15 +76,18 @@ export default function QuickTimerConfigModal({ kind, visible, onCancel, onStart
   const [repsText, setRepsText] = useState('');   // juarez: starting reps (= rounds)
   const [superset, setSuperset] = useState(false); // juarez: 2-exercise alternating ladder
   const [minutesText, setMinutesText] = useState(''); // emom: total duration
+  const [targetRepsText, setTargetRepsText] = useState(''); // pr: target reps (required)
   const [items, setItems] = useState<WorkoutItem[]>([]);
   const [scrollEnabled, setScrollEnabled] = useState(true);
 
   const reps = parseInt(repsText, 10);
   const minutes = parseInt(minutesText, 10);
+  const targetReps = parseInt(targetRepsText, 10);
   const canStart =
     kind === 'countup' ||
     (kind === 'juarez' && !isNaN(reps) && reps >= 1) ||
-    (kind === 'emom' && !isNaN(minutes) && minutes >= 1);
+    (kind === 'emom' && !isNaN(minutes) && minutes >= 1) ||
+    (kind === 'pr' && !isNaN(targetReps) && targetReps >= 1);
 
   const handleStart = () => {
     if (!canStart) return;
@@ -87,6 +96,7 @@ export default function QuickTimerConfigModal({ kind, visible, onCancel, onStart
       juarezStartingReps: kind === 'juarez' ? reps : undefined,
       juarezSuperset: kind === 'juarez' ? superset : undefined,
       emomMinutes: kind === 'emom' ? minutes : undefined,
+      targetReps: kind === 'pr' ? targetReps : undefined,
       items,
     });
   };
@@ -175,21 +185,47 @@ export default function QuickTimerConfigModal({ kind, visible, onCancel, onStart
               </View>
             )}
 
+            {kind === 'pr' && (
+              <View style={[styles.configCard, { borderColor: `${accent}44` }]}>
+                <View style={styles.configRow}>
+                  <Text style={styles.configLabel}>Target reps</Text>
+                  <TextInput
+                    style={[styles.configInput, { color: accent, borderColor: `${accent}88` }]}
+                    value={targetRepsText}
+                    onChangeText={setTargetRepsText}
+                    placeholder="—"
+                    placeholderTextColor={colors.textTertiary}
+                    keyboardType="number-pad"
+                    returnKeyType="done"
+                    selectTextOnFocus
+                  />
+                  <Text style={styles.unit}>reps</Text>
+                </View>
+                <Text style={styles.hint}>
+                  Try to beat or hit{' '}
+                  {isNaN(targetReps) || targetReps < 1 ? 'N' : targetReps} reps — your
+                  actual count can be edited after.
+                </Text>
+              </View>
+            )}
+
             {/* ─── Optional exercises ─── */}
             <BlockSection
               title={KIND_DISPLAY[kind].blockLabel}
-              blockType={kind === 'countup' ? 'finisher' : kind}
+              blockType={kind === 'countup' ? 'finisher' : kind === 'pr' ? 'mobility' : kind}
               accentColor={accent}
               items={items}
               showRestTime={kind === 'juarez'}
               repsEditable={kind === 'emom'}
-              maxItems={kind === 'juarez' ? (superset ? 2 : 1) : undefined}
+              maxItems={kind === 'juarez' ? (superset ? 2 : 1) : kind === 'pr' ? 1 : undefined}
               onChange={setItems}
               onScrollLock={setScrollEnabled}
             />
 
             <Text style={styles.optionalHint}>
-              Exercises are optional — skip to run as a bare timer.
+              {kind === 'pr'
+                ? 'Pick the exercise above — your target reps drive the attempt.'
+                : 'Exercises are optional — skip to run as a bare timer.'}
             </Text>
 
             <View style={styles.bottomPad} />
