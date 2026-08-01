@@ -566,6 +566,27 @@ export default function ExecutionScreen() {
     setPhase('exercise');
   };
 
+  // ── Tear down alarm state after it fires (or is cancelled) ──────────────────
+  // Centralizes the full cleanup so every "alarm is over" path clears ALL the
+  // pieces the UI keys on. Previously the fire sites only zeroed the countdown,
+  // leaving `alarmNotifId` set — so the execution-screen indicator stayed up
+  // (rendering the buggy "Alarm in undefined min" once the countdown hit 0) and
+  // the idle-screen card lingered on "Alarm!". Clearing both makes the alarm
+  // vanish everywhere the moment it fires.
+  const finalizeAlarmFired = useCallback(() => {
+    stopAlarmInterval();
+    alarmFireAtRef.current = null;
+    setAlarmCountdownSecs(null);
+    alarmCountdownSecsRef.current = 0;
+    setAlarmCountdownPaused(false);
+    alarmCountdownPausedRef.current = false;
+    // Cancel the (possibly already-fired) OS notification + drop the id.
+    setAlarmNotifId((id) => { if (id) cancelAlarm(id); return null; });
+    // Clear persisted state so a later reopen doesn't restore a fired alarm.
+    saveAlarmState(null);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+  }, [stopAlarmInterval]);
+
   const startAlarmInterval = useCallback(() => {
     stopAlarmInterval();
     alarmIntervalRef.current = setInterval(() => {
@@ -577,19 +598,14 @@ export default function ExecutionScreen() {
         ? Math.max(0, Math.ceil((alarmFireAtRef.current - Date.now()) / 1000))
         : alarmCountdownSecsRef.current - 1;
       if (s <= 0) {
-        stopAlarmInterval();
-        alarmFireAtRef.current = null;
-        setAlarmCountdownSecs(0);
-        alarmCountdownSecsRef.current = 0;
-        // Alarm fired — clear persisted state so a later reopen doesn't restore it.
-        saveAlarmState(null);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        // Alarm fired — tear everything down so the alarm fully disappears.
+        finalizeAlarmFired();
       } else {
         setAlarmCountdownSecs(s);
         alarmCountdownSecsRef.current = s;
       }
     }, 1000);
-  }, [stopAlarmInterval]);
+  }, [stopAlarmInterval, finalizeAlarmFired]);
 
   // ── Auto-start duration exercise timer when entering a new exercise ─────────
   useEffect(() => {
@@ -697,13 +713,9 @@ export default function ExecutionScreen() {
       if (alarmFireAtRef.current != null && !alarmCountdownPausedRef.current) {
         const remaining = Math.max(0, Math.ceil((alarmFireAtRef.current - Date.now()) / 1000));
         if (remaining <= 0) {
-          // Alarm fired while the app was in the background.
-          stopAlarmInterval();
-          alarmFireAtRef.current = null;
-          setAlarmCountdownSecs(0);
-          alarmCountdownSecsRef.current = 0;
-          saveAlarmState(null);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          // Alarm fired while the app was in the background — fully tear down so
+          // the alarm disappears from both screens (see finalizeAlarmFired).
+          finalizeAlarmFired();
         } else {
           setAlarmCountdownSecs(remaining);
           alarmCountdownSecsRef.current = remaining;
@@ -711,7 +723,7 @@ export default function ExecutionScreen() {
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [finalizeAlarmFired]);
 
   // ── Reset edit field when exercise changes ──────────────────────────────────
   useEffect(() => {
