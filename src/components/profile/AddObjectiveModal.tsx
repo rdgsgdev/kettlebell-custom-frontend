@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -22,24 +22,49 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   onCreate: (objective: Objective) => void;
+  /** When provided, the sheet opens in edit mode pre-filled from this objective.
+   *  Save then calls `onUpdate` (preserving id/createdAt) instead of `onCreate`. */
+  editingObjective?: Objective;
+  onUpdate?: (objective: Objective) => void;
 }
 
 /**
- * Create a new measurable objective in-app.
+ * Create or edit a measurable objective.
  *
- * 1. Pick a metric type (max_reps / max_weight / body_fat).
- * 2. For rep/weight metrics, pick an exercise from the library (required for
- *    max_reps, optional scope for max_weight).
- * 3. Set a target value.
+ * Create mode (default): pick a metric type (max_reps / max_weight / body_fat),
+ * optionally pick an exercise (required for max_reps, optional for max_weight),
+ * and set a target.
+ *
+ * Edit mode (when `editingObjective` is set): same form, pre-filled with the
+ * objective's current values. All fields remain editable. Save preserves the
+ * existing id + createdAt via `onUpdate`.
  */
-export default function AddObjectiveModal({ visible, onClose, onCreate }: Props) {
+export default function AddObjectiveModal({ visible, onClose, onCreate, editingObjective, onUpdate }: Props) {
   const { colors } = useSettings();
   const styles = makeStyles(colors);
+
+  const isEditing = !!editingObjective;
 
   const [metricType, setMetricType] = useState<ObjectiveMetricType>('max_reps');
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [target, setTarget] = useState<string>('');
   const [showExercisePicker, setShowExercisePicker] = useState(false);
+
+  // When the sheet opens, seed the form — either from the objective being
+  // edited or reset to the create-mode defaults.
+  useEffect(() => {
+    if (!visible) return;
+    if (editingObjective) {
+      setMetricType(editingObjective.metricType);
+      setExercise(editingObjective.exerciseName ? { name: editingObjective.exerciseName } as Exercise : null);
+      setTarget(editingObjective.target ? String(editingObjective.target) : '');
+    } else {
+      setMetricType('max_reps');
+      setExercise(null);
+      setTarget('');
+    }
+    setShowExercisePicker(false);
+  }, [visible, editingObjective]);
 
   const metric = getMetric(metricType);
   const needsExercise = metricType === 'max_reps' || metricType === 'max_weight';
@@ -64,14 +89,22 @@ export default function AddObjectiveModal({ visible, onClose, onCreate }: Props)
 
   const handleSave = () => {
     if (!canSave) return;
-    const objective: Objective = {
-      id: generateId(),
-      metricType,
-      target: targetNum,
-      exerciseName: exercise?.name,
-      createdAt: new Date().toISOString(),
-    };
-    onCreate(objective);
+    if (isEditing && onUpdate && editingObjective) {
+      onUpdate({
+        ...editingObjective,
+        metricType,
+        target: targetNum,
+        exerciseName: exercise?.name,
+      });
+    } else {
+      onCreate({
+        id: generateId(),
+        metricType,
+        target: targetNum,
+        exerciseName: exercise?.name,
+        createdAt: new Date().toISOString(),
+      });
+    }
     reset();
   };
 
@@ -93,7 +126,9 @@ export default function AddObjectiveModal({ visible, onClose, onCreate }: Props)
               <TouchableOpacity onPress={handleClose} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
                 <Text style={[styles.headerBtn, { color: colors.textSecondary }]}>Cancel</Text>
               </TouchableOpacity>
-              <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>New objective</Text>
+              <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
+                {isEditing ? 'Edit objective' : 'New objective'}
+              </Text>
               <TouchableOpacity onPress={handleSave} disabled={!canSave} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
                 <Text style={[styles.headerBtn, { color: canSave ? colors.accent : colors.textTertiary }]}>Save</Text>
               </TouchableOpacity>

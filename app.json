@@ -14,7 +14,10 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.sebastiendangeuger.kbc",
-      "backgroundColor": "#0D0D0F"
+      "backgroundColor": "#0D0D0F",
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "KBC reads your weight and body fat from the Health app so your profile and goals stay up to date."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -34,6 +37,12 @@
           "icon": "./assets/icon.png",
           "color": "#FF6B35",
           "sounds": []
+        }
+      ],
+      [
+        "react-native-health",
+        {
+          "healthSharePermission": "KBC reads your weight and body fat from the Health app so your profile and goals stay up to date."
         }
       ]
     ]

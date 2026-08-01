@@ -56,13 +56,45 @@ import {
   apiDeleteTemplate,
   apiDeleteLog,
 } from './api';
-import { Exercise, WorkoutTemplate, WorkoutLog } from '../models';
+import { Exercise, WorkoutTemplate, WorkoutLog, UserProfile } from '../models';
+import { normalizeProfile } from '../utils/objectives';
 
 let pushInFlight = false;
 
 // On web there is no local SQLite cache — reads/writes go straight to Supabase
 // via storage/index.ts, so the sync engine is a no-op there.
 const isWeb = Platform.OS === 'web';
+
+/**
+ * Field-level merge of a remotely-pulled profile into the local cache profile.
+ *
+ * The old behavior overwrote the whole local profile blob with the remote one,
+ * which wiped body fat / objectives / weight to `undefined` whenever the server
+ * row held a `null` (e.g. the value had never been set, or a stale push beat a
+ * fresh edit). That was the root cause of body fat "resetting to undefined".
+ *
+ * New behavior: take the remote value for each field, but *never let a missing
+ * remote value overwrite a present local value*. This keeps a remote `null` from
+ * destroying data the user just entered locally that hasn't pushed yet. Scalar
+ * fields use `remote ?? local`; the collections (objectives, goals) prefer the
+ * remote copy only when it's non-empty, otherwise keep local so a transiently
+ * empty server list can't delete user objectives.
+ */
+function mergeProfile(local: UserProfile, remote: UserProfile): UserProfile {
+  const merged: UserProfile = {
+    ...local,
+    name: remote.name ?? local.name,
+    weightKg: remote.weightKg ?? local.weightKg,
+    heightCm: remote.heightCm ?? local.heightCm,
+    birthYear: remote.birthYear ?? local.birthYear,
+    bodyFatPct: remote.bodyFatPct ?? local.bodyFatPct,
+    weightKgUpdatedAt: remote.weightKgUpdatedAt ?? local.weightKgUpdatedAt,
+    bodyFatPctUpdatedAt: remote.bodyFatPctUpdatedAt ?? local.bodyFatPctUpdatedAt,
+    goals: remote.goals.length > 0 ? remote.goals : local.goals,
+    objectives: remote.objectives && remote.objectives.length > 0 ? remote.objectives : local.objectives,
+  };
+  return normalizeProfile(merged);
+}
 
 /** Push all locally-dirty rows to the server. Best-effort; errors are swallowed
  *  so a failed push doesn't crash a UI save — the row stays dirty and will be
@@ -166,7 +198,12 @@ export async function pullAll(): Promise<void> {
       await dbSaveSettings(rest);
     }
     const remoteProfile = await apiPullProfile();
-    if (remoteProfile) await dbSaveProfile(remoteProfile);
+    if (remoteProfile) {
+      // Field-level merge so a remote `null`/empty can't wipe locally-entered
+      // body fat, weight, or objectives (see mergeProfile for rationale).
+      const localProfile = await dbLoadProfile();
+      await dbSaveProfile(mergeProfile(localProfile, remoteProfile));
+    }
   } catch (e) {
     console.warn('pullAll failed (will retry next foreground)', e);
     return;

@@ -17,47 +17,51 @@ interface Props {
   objective: Objective;
   progress: ObjectiveProgress;
   onDelete: (id: string) => void;
+  /** Open the objective in the editor. Tapping the card body triggers this. */
+  onEdit: (objective: Objective) => void;
 }
 
 /**
  * One measurable-objective row: icon + title + current/target value + progress
- * bar. The trailing × removes the objective (confirmed via long-press style
- * tap; parent owns the data mutation).
+ * bar. Tapping the card body opens the editor (full edit); the trailing ×
+ * removes the objective. Parent owns the data mutations.
  */
-export default function ObjectiveCard({ objective, progress, onDelete }: Props) {
+export default function ObjectiveCard({ objective, progress, onDelete, onEdit }: Props) {
   const { colors } = useSettings();
   const styles = makeStyles(colors);
   const metric = getMetric(objective.metricType);
 
   return (
     <View style={styles.row}>
-      <View style={[styles.iconBadge, { backgroundColor: progress.done ? colors.successDim : colors.accentDim }]}>
-        <Ionicons
-          name={(metric.icon as any) || 'flag-outline'}
-          size={16}
-          color={progress.done ? colors.success : colors.accent}
-        />
-      </View>
-
-      <View style={styles.body}>
-        <View style={styles.header}>
-          <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
-            {objectiveTitle(objective)}
-          </Text>
-          <Text style={[styles.target, { color: progress.done ? colors.success : colors.textSecondary }]}>
-            {formatCurrentValue(progress.current, objective.metricType)} /{' '}
-            {objective.target} {metric.unit}
-          </Text>
+      <TouchableOpacity style={styles.bodyBtn} onPress={() => onEdit(objective)} activeOpacity={0.6}>
+        <View style={[styles.iconBadge, { backgroundColor: progress.done ? colors.successDim : colors.accentDim }]}>
+          <Ionicons
+            name={(metric.icon as any) || 'flag-outline'}
+            size={16}
+            color={progress.done ? colors.success : colors.accent}
+          />
         </View>
 
-        <Text style={[styles.subtitle, { color: colors.textTertiary }]} numberOfLines={1}>
-          {progress.done ? 'Goal reached 🎉' : objectiveSubtitle(objective)}
-        </Text>
+        <View style={styles.body}>
+          <View style={styles.header}>
+            <Text style={[styles.title, { color: colors.textPrimary }]} numberOfLines={1}>
+              {objectiveTitle(objective)}
+            </Text>
+            <Text style={[styles.target, { color: progress.done ? colors.success : colors.textSecondary }]}>
+              {formatCurrentValue(progress.current, objective.metricType)} /{' '}
+              {objective.target} {metric.unit}
+            </Text>
+          </View>
 
-        <View style={styles.barWrap}>
-          <ProgressBar progress={progress.pct} done={progress.done} />
+          <Text style={[styles.subtitle, { color: colors.textTertiary }]} numberOfLines={1}>
+            {progress.done ? 'Goal reached 🎉' : objectiveSubtitle(objective)}
+          </Text>
+
+          <View style={styles.barWrap}>
+            <ProgressBar progress={progress.pct} done={progress.done} />
+          </View>
         </View>
-      </View>
+      </TouchableOpacity>
 
       <TouchableOpacity
         onPress={() => onDelete(objective.id)}
@@ -77,6 +81,14 @@ function makeStyles(c: typeof Colors) {
       alignItems: 'center',
       gap: Spacing.sm,
       paddingVertical: Spacing.sm,
+    },
+    // The tappable region covering the icon + content. Uses flex: 1 so the
+    // delete button on the right keeps its own fixed touch target.
+    bodyBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.sm,
+      flex: 1,
     },
     iconBadge: {
       width: 34,
