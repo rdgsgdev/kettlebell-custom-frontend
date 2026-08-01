@@ -3,8 +3,8 @@ import { AppState, View, StyleSheet, ActivityIndicator } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { AppProvider } from './src/context/AppContext';
-import { SettingsProvider } from './src/context/SettingsContext';
+import { AppProvider, useAppContext } from './src/context/AppContext';
+import { SettingsProvider, useSettings } from './src/context/SettingsContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { pullAll } from './src/storage';
 import TabNavigator from './src/navigation/TabNavigator';
@@ -17,11 +17,10 @@ const BG = C.background;
 // before revealing the main app. Splits providers so Auth is available to the
 // gate but the data providers only mount once authenticated.
 function AuthedApp() {
-  const { session } = useAuth();
   const [bootstrapped, setBootstrapped] = useState(false);
-  const [isBackground, setIsBackground] = useState(false);
 
-  // Initial pull of server data into the local cache.
+  // Initial pull of server data into the local cache. Providers read from the
+  // cache on mount, so a pull *before* they mount is enough for first launch.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -35,17 +34,6 @@ function AuthedApp() {
       cancelled = true;
     };
   }, []);
-
-  // Re-sync when returning to the foreground.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      setIsBackground(state === 'background' || state === 'inactive');
-      if (state === 'active' && session) {
-        pullAll().catch(() => {});
-      }
-    });
-    return () => sub.remove();
-  }, [session]);
 
   if (!bootstrapped) {
     return (
@@ -61,15 +49,45 @@ function AuthedApp() {
         <NavigationContainer>
           <StatusBar style="auto" backgroundColor="transparent" translucent />
           <TabNavigator />
-          {isBackground && (
-            <View
-              pointerEvents="none"
-              style={{ ...StyleSheet.absoluteFillObject, backgroundColor: BG }}
-            />
-          )}
+          <ForegroundSync />
         </NavigationContainer>
       </AppProvider>
     </SettingsProvider>
+  );
+}
+
+/**
+ * Listens for foreground transitions and re-pulls server data. Because this is
+ * mounted *inside* the Settings + App providers, after each pull it can call
+ * both `reloadFromCache` functions so in-memory state (profile, logs, etc.)
+ * reflects the freshly-merged cache instead of going stale — which is what
+ * previously made body fat / objectives appear to reset after backgrounding.
+ */
+function ForegroundSync() {
+  const { session } = useAuth();
+  const { reloadFromCache: reloadSettings } = useSettings();
+  const { reloadFromCache: reloadApp } = useAppContext();
+  const [isBackground, setIsBackground] = useState(false);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (state) => {
+      setIsBackground(state === 'background' || state === 'inactive');
+      if (state === 'active' && session) {
+        try {
+          await pullAll();
+          // Refresh provider state from the merged cache.
+          await Promise.all([reloadSettings(), reloadApp()]);
+        } catch {
+          // Best-effort; the next foreground will retry.
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [session, reloadSettings, reloadApp]);
+
+  if (!isBackground) return null;
+  return (
+    <View pointerEvents="none" style={{ ...StyleSheet.absoluteFillObject, backgroundColor: BG }} />
   );
 }
 

@@ -54,6 +54,13 @@ export interface UserProfile {
   heightCm?: number;
   birthYear?: number;
   bodyFatPct?: number;
+  /** ISO timestamp of the most recent Apple Health weight sample applied. Lets
+   *  the auto-fetch decide whether a new Health reading is newer than the
+   *  value currently stored, so manual edits aren't clobbered. Written only
+   *  by the Health sync path, never by the manual text-input path. */
+  weightKgUpdatedAt?: string;
+  /** ISO timestamp of the most recent Apple Health body fat sample applied. */
+  bodyFatPctUpdatedAt?: string;
   /** Legacy simple goal tags — still read by the AI coach context + Supabase sync.
    *  Kept for backward compatibility; the UI now uses `objectives` instead. */
   goals: string[];

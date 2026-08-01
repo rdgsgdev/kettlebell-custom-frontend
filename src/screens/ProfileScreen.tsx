@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,10 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
 import { useAppContext } from '../context/AppContext';
@@ -21,6 +23,10 @@ import CoachChat from '../components/coach/CoachChat';
 import ObjectiveCard from '../components/profile/ObjectiveCard';
 import AddObjectiveModal from '../components/profile/AddObjectiveModal';
 import { computeProgress } from '../utils/objectives';
+import {
+  getLatestBodyMetrics,
+  isHealthAvailable,
+} from '../services/health';
 
 export default function ProfileScreen() {
   const { profile, updateProfile, colors } = useSettings();
@@ -28,14 +34,86 @@ export default function ProfileScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [showCoach, setShowCoach] = useState(false);
   const [showAddObjective, setShowAddObjective] = useState(false);
+  // Objective currently being edited (null = create mode). Held outside the
+  // modal so the same AddObjectiveModal instance handles both flows.
+  const [editingObjective, setEditingObjective] = useState<Objective | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  // Keep the freshest profile for async Health merges that run after a focus.
+  // (updateProfile closes over `profile`, which can be stale inside the focus
+  // callback; this ref always points at the latest snapshot.)
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
 
   const addObjective = (objective: Objective) => {
     updateProfile({ objectives: [...profile.objectives, objective] });
   };
 
+  const updateObjective = (objective: Objective) => {
+    updateProfile({
+      objectives: profile.objectives.map((o) => (o.id === objective.id ? objective : o)),
+    });
+    setShowAddObjective(false);
+    setEditingObjective(null);
+  };
+
   const deleteObjective = (id: string) => {
     updateProfile({ objectives: profile.objectives.filter((o) => o.id !== id) });
   };
+
+  const openEditor = (objective: Objective) => {
+    setEditingObjective(objective);
+    setShowAddObjective(true);
+  };
+
+  const openCreator = () => {
+    setEditingObjective(null);
+    setShowAddObjective(true);
+  };
+
+  /**
+   * Pull the latest weight + body fat from Apple Health and apply only the
+   * readings newer than what's stored. Manual edits (which don't set the
+   * `*UpdatedAt` timestamps) are never overwritten by an older Health sample.
+   */
+  const pullFromHealth = useCallback(async () => {
+    if (!isHealthAvailable()) return;
+    setHealthLoading(true);
+    try {
+      const metrics = await getLatestBodyMetrics();
+      const current = profileRef.current;
+      const patch: Partial<typeof profile> = {};
+
+      if (metrics.weightKg != null) {
+        const storedAt = current.weightKgUpdatedAt;
+        if (!storedAt || !metrics.weightDate || metrics.weightDate >= storedAt) {
+          patch.weightKg = metrics.weightKg;
+          if (metrics.weightDate) patch.weightKgUpdatedAt = metrics.weightDate;
+        }
+      }
+      if (metrics.bodyFatPct != null) {
+        const storedAt = current.bodyFatPctUpdatedAt;
+        if (!storedAt || !metrics.bodyFatDate || metrics.bodyFatDate >= storedAt) {
+          patch.bodyFatPct = metrics.bodyFatPct;
+          if (metrics.bodyFatDate) patch.bodyFatPctUpdatedAt = metrics.bodyFatDate;
+        }
+      }
+      if (Object.keys(patch).length > 0) {
+        await updateProfile(patch);
+      }
+    } finally {
+      setHealthLoading(false);
+    }
+  }, [updateProfile]);
+
+  // Auto-fetch once when the tab gains focus (iOS only). Skipped on subsequent
+  // re-focuses within the same session to avoid surprising overwrites; the user
+  // can always tap the refresh button to re-pull.
+  useFocusEffect(
+    useCallback(() => {
+      pullFromHealth();
+    }, [pullFromHealth]),
+  );
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
@@ -119,6 +197,12 @@ export default function ProfileScreen() {
                 returnKeyType="done"
               />
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>kg</Text>
+              <HealthRefreshButton
+                loading={healthLoading}
+                color={colors.accent}
+                textTertiary={colors.textTertiary}
+                onPress={pullFromHealth}
+              />
             </View>
 
             <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
@@ -155,6 +239,12 @@ export default function ProfileScreen() {
                 returnKeyType="done"
               />
               <Text style={[styles.fieldUnit, { color: colors.textTertiary }]}>%</Text>
+              <HealthRefreshButton
+                loading={healthLoading}
+                color={colors.accent}
+                textTertiary={colors.textTertiary}
+                onPress={pullFromHealth}
+              />
             </View>
           </View>
 
@@ -163,7 +253,7 @@ export default function ProfileScreen() {
             <View style={styles.sectionHeader}>
               <Text style={[styles.sectionHeaderLabel, { color: colors.textTertiary }]}>OBJECTIVES</Text>
               <TouchableOpacity
-                onPress={() => setShowAddObjective(true)}
+                onPress={openCreator}
                 hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
                 style={styles.addObjectiveBtn}
               >
@@ -175,7 +265,7 @@ export default function ProfileScreen() {
               <View style={styles.emptyObjectives}>
                 <TouchableOpacity
                   style={[styles.emptyAddBtn, { borderColor: colors.accent, backgroundColor: colors.accentDim }]}
-                  onPress={() => setShowAddObjective(true)}
+                  onPress={openCreator}
                   activeOpacity={0.7}
                 >
                   <Ionicons name="add-outline" size={16} color={colors.accent} />
@@ -190,6 +280,7 @@ export default function ProfileScreen() {
                     objective={objective}
                     progress={computeProgress(objective, { logs, profile })}
                     onDelete={deleteObjective}
+                    onEdit={openEditor}
                   />
                 ))}
               </View>
@@ -221,14 +312,61 @@ export default function ProfileScreen() {
 
       <AddObjectiveModal
         visible={showAddObjective}
-        onClose={() => setShowAddObjective(false)}
+        editingObjective={editingObjective ?? undefined}
+        onClose={() => {
+          setShowAddObjective(false);
+          setEditingObjective(null);
+        }}
         onCreate={addObjective}
+        onUpdate={updateObjective}
       />
 
       <CoachChat visible={showCoach} onClose={() => setShowCoach(false)} />
     </SafeAreaView>
   );
 }
+
+/**
+ * Small "pull from Apple Health" affordance shown at the end of the Weight and
+ * Body fat rows. On non-iOS platforms it renders nothing (HealthKit is iOS-only).
+ */
+function HealthRefreshButton({
+  loading,
+  color,
+  textTertiary,
+  onPress,
+}: {
+  loading: boolean;
+  color: string;
+  textTertiary: string;
+  onPress: () => void;
+}) {
+  if (!isHealthAvailable()) return null;
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={loading}
+      hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }}
+      style={healthRefreshStyles.btn}
+      accessibilityLabel="Pull from Apple Health"
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color={textTertiary} />
+      ) : (
+        <Ionicons name="heart-outline" size={16} color={color} />
+      )}
+    </TouchableOpacity>
+  );
+}
+
+const healthRefreshStyles = StyleSheet.create({
+  btn: {
+    marginLeft: 2,
+    width: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1 },

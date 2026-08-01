@@ -447,7 +447,9 @@ export async function apiPushSettings(settings: AppSettings): Promise<void> {
 export async function apiPullProfile(): Promise<UserProfile | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('name, weight_kg, height_cm, birth_year, body_fat_pct, goals, objectives')
+    .select(
+      'name, weight_kg, height_cm, birth_year, body_fat_pct, weight_kg_updated_at, body_fat_pct_updated_at, goals, objectives',
+    )
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
@@ -459,6 +461,8 @@ export async function apiPullProfile(): Promise<UserProfile | null> {
     heightCm: data.height_cm ?? undefined,
     birthYear: data.birth_year ?? undefined,
     bodyFatPct: data.body_fat_pct ?? undefined,
+    weightKgUpdatedAt: data.weight_kg_updated_at ?? undefined,
+    bodyFatPctUpdatedAt: data.body_fat_pct_updated_at ?? undefined,
     goals: data.goals ?? [],
     objectives: data.objectives ?? undefined,
   });
@@ -472,6 +476,8 @@ export async function apiPushProfile(profile: UserProfile): Promise<void> {
       height_cm: profile.heightCm ?? null,
       birth_year: profile.birthYear ?? null,
       body_fat_pct: profile.bodyFatPct ?? null,
+      weight_kg_updated_at: profile.weightKgUpdatedAt ?? null,
+      body_fat_pct_updated_at: profile.bodyFatPctUpdatedAt ?? null,
       goals: profile.goals ?? [],
       objectives: profile.objectives ?? [],
     },
