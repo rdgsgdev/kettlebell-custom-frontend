@@ -141,10 +141,16 @@ function buildAdhocTemplate(name: string, block: WorkoutBlock): WorkoutTemplate 
   };
 }
 
-/** Count-up stopwatch (e.g. jump rope / boxing) — stopped manually. Exercises
- *  are optional; if none are passed, a single placeholder item keeps the timer
- *  runnable as a pure stopwatch (the original quick-timer behavior). */
-function buildCountupAdhoc(items?: WorkoutItem[]): WorkoutTemplate {
+/** Count-up stopwatch (e.g. jump rope / boxing / holds) — stopped manually.
+ *  Exercises are optional; if none are passed, a single placeholder item keeps
+ *  the timer runnable as a pure stopwatch (the original quick-timer behavior).
+ *
+ *  The block is stamped with a neutral "Count-up" custom label + accent color so
+ *  the execution badge and history don't read "Finisher" — a count-up timer is
+ *  for any timed work, not just finishers. `accentColor` is the live theme
+ *  accent (mirrors the quick-timer button color), defaulting to the dark alias. */
+function buildCountupAdhoc(items?: WorkoutItem[], accentColor?: string): WorkoutTemplate {
+  const accent = accentColor ?? Colors.accent;
   const stamped = (items ?? []).map((it) => ({ ...it, executionType: 'countup' as const }));
   const blockItems: WorkoutItem[] = stamped.length > 0
     ? stamped
@@ -161,6 +167,8 @@ function buildCountupAdhoc(items?: WorkoutItem[]): WorkoutTemplate {
     id: generateId(),
     type: 'finisher',
     items: blockItems,
+    customLabel: 'Count-up',
+    customColor: accent,
   });
 }
 
@@ -197,16 +205,54 @@ function buildEmomAdhoc(minutes: number, items?: WorkoutItem[]): WorkoutTemplate
   });
 }
 
+/** PR Attempt — a single reps exercise with a target rep count, run as a normal
+ *  exercise (no timer). The user stops to record the actual reps achieved, which
+ *  can be edited (during the run via the REPS pill, or at the review screen) if
+ *  they beat or miss the target. Exercises are optional; if none are passed, a
+ *  placeholder item keeps the attempt runnable. The block uses the success
+ *  (green) color and a "PR Attempt" label so it stands out in execution + history. */
+function buildPrAdhoc(targetReps: number, items?: WorkoutItem[]): WorkoutTemplate {
+  const passed = (items ?? []).slice(0, 1).map((it) => ({
+    ...it,
+    executionType: 'reps' as const,
+    reps: targetReps,
+    sets: 1,
+    restTime: 0,
+  }));
+  const blockItems: WorkoutItem[] = passed.length > 0
+    ? passed
+    : [{
+        id: generateId(),
+        exerciseName: 'PR Attempt',
+        repMode: 'bilateral',
+        reps: targetReps,
+        weight: 0,
+        restTime: 0,
+        executionType: 'reps',
+        sets: 1,
+      }];
+  return buildAdhocTemplate('Quick PR', {
+    id: generateId(),
+    type: 'mobility',
+    items: blockItems,
+    customLabel: 'PR Attempt',
+    customColor: Colors.success,
+  });
+}
+
 /** Dispatches a quick-timer config (from QuickTimerConfigModal) to the matching
- *  ad-hoc template builder. */
-function buildFromConfig(cfg: QuickTimerConfig): WorkoutTemplate {
+ *  ad-hoc template builder. `accentColor` is the live theme accent, threaded to
+ *  the count-up builder so its badge/history use the neutral accent label. */
+function buildFromConfig(cfg: QuickTimerConfig, accentColor: string): WorkoutTemplate {
   switch (cfg.kind) {
     case 'countup':
-      return buildCountupAdhoc(cfg.items);
+      return buildCountupAdhoc(cfg.items, accentColor);
     case 'juarez':
       return buildJuarezAdhoc(cfg.juarezStartingReps!, cfg.juarezSuperset ?? false, cfg.items);
     case 'emom':
       return buildEmomAdhoc(cfg.emomMinutes!, cfg.items);
+    case 'pr':
+      return buildPrAdhoc(cfg.targetReps ?? 1, cfg.items);
   }
 }
 
@@ -1446,6 +1492,14 @@ export default function ExecutionScreen() {
               <Ionicons name="repeat-outline" size={20} color="#FBBF24" />
               <Text style={[styles.quickTimerBtnText, { color: '#FBBF24' }]}>EMOM</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickTimerBtn, { backgroundColor: `${colors.success}22`, borderColor: `${colors.success}55` }]}
+              onPress={() => setConfigKind('pr')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trophy-outline" size={20} color={colors.success} />
+              <Text style={[styles.quickTimerBtnText, { color: colors.success }]}>PR</Text>
+            </TouchableOpacity>
           </View>
 
           {/* ── Workout picker (only when there are active templates) ── */}
@@ -1557,14 +1611,14 @@ export default function ExecutionScreen() {
         </View>
       </SafeAreaView>
 
-      {/* ── Quick-timer config modal (countup / juarez / emom) ── */}
+      {/* ── Quick-timer config modal (countup / juarez / emom / pr) ── */}
       <QuickTimerConfigModal
         kind={configKind ?? 'countup'}
         visible={configKind !== null}
         onCancel={() => setConfigKind(null)}
         onStart={(cfg) => {
           setConfigKind(null);
-          startAdhoc(buildFromConfig(cfg));
+          startAdhoc(buildFromConfig(cfg, colors.accent));
         }}
       />
     </>
@@ -1954,7 +2008,7 @@ export default function ExecutionScreen() {
                     {isPaused
                       ? <Ionicons name="pause" size={72} color={color} />
                       : <><Text style={[styles.timerBig, { color }]}>{exerciseTimerSeconds}</Text>
-                          <Text style={styles.timerSub}>{isCountupExercise ? 'seconds (max hold)' : 'seconds'}</Text></>
+                          <Text style={styles.timerSub}>{isCountupExercise ? 'seconds elapsed' : 'seconds'}</Text></>
                     }
                   </TouchableOpacity>
                 )}
@@ -1964,9 +2018,10 @@ export default function ExecutionScreen() {
                     const t = getExecutionType(currentItem);
                     if (t === 'countup') {
                       // Value is driven by the running timer; show it live, or the
-                      // recorded value once stopped.
+                      // recorded value once stopped. Neutral "elapsed" wording —
+                      // a count-up timer fits any timed work, not just max holds.
                       const live = isDurationExercise ? `${exerciseTimerSeconds}s` : `${actualDurations[repsKey] ?? 0}s`;
-                      return <MetaPill value={live} label="MAX HOLD" color={color} />;
+                      return <MetaPill value={live} label="ELAPSED" color={color} />;
                     }
                     if (t === 'countdown') {
                       return <MetaPill value={`${currentItem.durationSeconds}s`} label="DURATION" color={color} />;
@@ -2436,9 +2491,11 @@ function makeStyles(c: typeof Colors) {
   startBtnText: { ...Typography.h3, color: '#fff' },
   startRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   startBtnCompact: { flex: 1 },
-  // Quick-timer (ad-hoc) buttons row — 3 rounded buttons above the workout picker.
-  quickTimersRow: { flexDirection: 'row', gap: Spacing.sm, width: '100%' },
-  quickTimerBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: Radius.xl, borderWidth: 1.5, paddingVertical: 14 },
+  // Quick-timer (ad-hoc) buttons row — a wrapping 2×2 grid of rounded buttons
+  // (Count-up / Juarez / EMOM / PR) above the workout picker. Each button is
+  // 48% wide with space-between so two per row line up without overflow.
+  quickTimersRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: Spacing.sm, width: '100%' },
+  quickTimerBtn: { width: '48%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: Radius.xl, borderWidth: 1.5, paddingVertical: 14 },
   quickTimerBtnText: { ...Typography.captionBold },
   alarmFab: { width: 56, height: 56, borderRadius: 28, backgroundColor: c.warning, alignItems: 'center', justifyContent: 'center', shadowColor: c.warning, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 10 },
   alarmCountdown: { backgroundColor: c.warningDim, borderRadius: Radius.lg, padding: Spacing.md, gap: Spacing.sm },
