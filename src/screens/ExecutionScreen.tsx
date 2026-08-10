@@ -283,6 +283,11 @@ export default function ExecutionScreen() {
   const [emomSeconds, setEmomSeconds] = useState(60);
   // Per-block completion / skipped tracking
   const [completedByBlock, setCompletedByBlock] = useState<Record<string, number[]>>({});
+  // Per-SET completion (finer than completedByBlock, which is per-item). Keys are
+  // `${itemIdx}-${setIdx}` so a multi-set exercise records each set as it's done —
+  // this is what lets the review screen and the saved log treat each set as an
+  // independent, completed/not-reached entity instead of collapsing to one row.
+  const [completedSetsByBlock, setCompletedSetsByBlock] = useState<Record<string, string[]>>({});
   const [skippedByBlock, setSkippedByBlock] = useState<Record<string, number[]>>({});
   const [emomCompletedByBlock, setEmomCompletedByBlock] = useState<Record<string, number>>({});
   const [emomSkippedByBlock, setEmomSkippedByBlock] = useState<Record<string, number[]>>({});
@@ -503,6 +508,11 @@ export default function ExecutionScreen() {
           if (!item) return;
           const totalSets = item.sets ?? 1;
           const isLastSet = setIdx >= totalSets - 1;
+          // Countdown set completed (per-set, mirrors handleManualDone).
+          setCompletedSetsByBlock((prev) => ({
+            ...prev,
+            [block.id]: [...(prev[block.id] ?? []), `${idx}-${setIdx}`],
+          }));
           if (isLastSet) {
             setCompletedByBlock((prev) => ({
               ...prev,
@@ -802,6 +812,7 @@ export default function ExecutionScreen() {
     setWorkoutEndedAt(null);
     setBlockIdx(0);
     setCompletedByBlock({});
+    setCompletedSetsByBlock({});
     setSkippedByBlock({});
     setEmomCompletedByBlock({});
     setEmomSkippedByBlock({});
@@ -951,6 +962,12 @@ export default function ExecutionScreen() {
     if (!item) return;
     const totalSets = item.sets ?? 1;
     const isLastSet = manualSetIdx >= totalSets - 1;
+    // Record this set as completed (per-set, before advancing). Items without
+    // explicit sets collapse to a single set, so this stays correct for them.
+    setCompletedSetsByBlock((prev) => ({
+      ...prev,
+      [currentBlock.id]: [...(prev[currentBlock.id] ?? []), `${manualIdx}-${manualSetIdx}`],
+    }));
     if (isLastSet) {
       setCompletedByBlock((prev) => ({
         ...prev,
@@ -983,13 +1000,20 @@ export default function ExecutionScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     // Record the actual elapsed seconds for this performance.
     const elapsed = exerciseTimerSecondsRef.current;
-    const key = `${currentBlock.id}-${manualIdx}`;
+    // Count-up holds can be multi-set too: include the set index so each set's
+    // recorded duration is independent (mirrors the reps/weight repsKey above).
+    const key = `${currentBlock.id}-${manualIdx}-${manualSetIdxRef.current}`;
     setActualDurations((prev) => ({ ...prev, [key]: elapsed }));
     // Stop the timer.
     stopExerciseTimer();
 
     const totalSets = item.sets ?? 1;
     const isLastSet = manualSetIdx >= totalSets - 1;
+    // Count-up set completed (per-set, mirrors handleManualDone).
+    setCompletedSetsByBlock((prev) => ({
+      ...prev,
+      [currentBlock.id]: [...(prev[currentBlock.id] ?? []), `${manualIdx}-${manualSetIdx}`],
+    }));
     if (isLastSet) {
       setCompletedByBlock((prev) => ({
         ...prev,
@@ -1059,7 +1083,9 @@ export default function ExecutionScreen() {
       setManualIdx(prevIdx);
       setManualSetIdx(0);
       if (currentBlock) {
+        const prefix = `${prevIdx}-`;
         setCompletedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
+        setCompletedSetsByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((k) => !k.startsWith(prefix)) }));
         setSkippedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
       }
     } else if (blockIdx > 0) {
@@ -1075,9 +1101,11 @@ export default function ExecutionScreen() {
         startTimer();
       } else {
         const lastIdx = prevBlock.items.length - 1;
+        const prefix = `${lastIdx}-`;
         setManualIdx(lastIdx);
         setManualSetIdx(0);
         setCompletedByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((i) => i !== lastIdx) }));
+        setCompletedSetsByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((k) => !k.startsWith(prefix)) }));
         setSkippedByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((i) => i !== lastIdx) }));
         setPhase('exercise');
       }
@@ -1269,6 +1297,7 @@ export default function ExecutionScreen() {
     setActualWeights({});
     setActualDurations({});
     setCompletedByBlock({});
+    setCompletedSetsByBlock({});
     setSkippedByBlock({});
     setEmomCompletedByBlock({});
     setEmomSkippedByBlock({});
@@ -1341,27 +1370,38 @@ export default function ExecutionScreen() {
         }
       } else {
         const completedIdx = completedByBlock[block.id] ?? [];
+        const completedSets = completedSetsByBlock[block.id] ?? [];
         const skippedIdx = skippedByBlock[block.id] ?? [];
         block.items.forEach((item, idx) => {
-          const key = `${block.id}-${idx}`;
           const exType = getExecutionType(item);
-          itemLogs.push({
-            id: generateId(),
-            blockId: block.id,
-            blockType: block.type,
-            customLabel: block.customLabel,
-            customColor: block.customColor,
-            exerciseName: item.exerciseName,
-            reps: actualReps[key] ?? item.reps,
-            repsLeft: item.repMode !== 'bilateral' ? (actualReps[`${key}-L`] ?? item.reps) : undefined,
-            repsRight: item.repMode !== 'bilateral' ? (actualReps[`${key}-R`] ?? item.reps) : undefined,
-            weight: actualWeights[key] ?? item.weight,
-            repMode: item.repMode,
-            completed: !isPartial || completedIdx.includes(idx),
-            skipped: skippedIdx.includes(idx),
-            // For duration items, record performed seconds (actual or planned).
-            durationSeconds: exType !== 'reps' ? (actualDurations[key] ?? item.durationSeconds) : undefined,
-          });
+          const totalSets = item.sets ?? 1;
+          const isMultiSet = totalSets > 1;
+          // Emit one ItemLog PER SET so each set keeps its own reps/weight in
+          // history. Single-set items (the common case) still produce exactly
+          // one log row. Per-set reps/weight read from the set-aware keys; per-
+          // set completion/skip is derived from completedSets / skippedIdx.
+          for (let setIdx = 0; setIdx < totalSets; setIdx++) {
+            const key = `${block.id}-${idx}-${setIdx}`;
+            const setCompleted = !isPartial || completedSets.includes(`${idx}-${setIdx}`);
+            itemLogs.push({
+              id: generateId(),
+              blockId: block.id,
+              blockType: block.type,
+              customLabel: block.customLabel,
+              customColor: block.customColor,
+              exerciseName: item.exerciseName,
+              reps: actualReps[key] ?? item.reps,
+              repsLeft: item.repMode !== 'bilateral' ? (actualReps[`${key}-L`] ?? item.reps) : undefined,
+              repsRight: item.repMode !== 'bilateral' ? (actualReps[`${key}-R`] ?? item.reps) : undefined,
+              weight: actualWeights[key] ?? item.weight,
+              repMode: item.repMode,
+              completed: setCompleted,
+              skipped: skippedIdx.includes(idx),
+              setNumber: isMultiSet ? setIdx + 1 : undefined,
+              // For duration items, record performed seconds (actual or planned).
+              durationSeconds: exType !== 'reps' ? (actualDurations[key] ?? item.durationSeconds) : undefined,
+            });
+          }
         });
       }
     });
@@ -1406,6 +1446,7 @@ export default function ExecutionScreen() {
     setActualWeights({});
     setActualDurations({});
     setCompletedByBlock({});
+    setCompletedSetsByBlock({});
     setSkippedByBlock({});
     setEmomCompletedByBlock({});
     setEmomSkippedByBlock({});
@@ -1734,26 +1775,41 @@ export default function ExecutionScreen() {
                       })
                     ) : (
                       block.items.map((item, idx) => {
-                        const key = `${block.id}-${idx}`;
                         const completed = completedByBlock[block.id] ?? [];
+                        const completedSets = completedSetsByBlock[block.id] ?? [];
                         const skipped = skippedByBlock[block.id] ?? [];
-                        const notReached = isStopped && !completed.includes(idx) && !skipped.includes(idx);
-                        return (
-                          <CompletionExerciseRow
-                            key={key} rowKey={key} repsKey={key} item={item}
-                            isSkipped={skipped.includes(idx)}
-                            isNotReached={notReached}
-                            actualReps={actualReps} actualWeights={actualWeights} actualDurations={actualDurations}
-                            expandedKey={reviewExpandedKey}
-                            onToggle={() => setReviewExpandedKey(reviewExpandedKey === key ? null : key)}
-                            onChangeReps={(k, v) => setActualReps((prev) => ({ ...prev, [k]: v }))}
-                            onChangeWeight={(k, v) => setActualWeights((prev) => ({ ...prev, [k]: v }))}
-                            onChangeDuration={(k, v) => setActualDurations((prev) => ({ ...prev, [k]: v }))}
-                            onUnskip={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: (prev[block.id] ?? []).filter((i) => i !== idx) }))}
-                            onMarkSkipped={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: [...(prev[block.id] ?? []), idx] }))}
-                            color={bColor}
-                          />
-                        );
+                        // Render each set as its own independent row so reps/weight
+                        // can be edited per set. Items with no explicit `sets`
+                        // render exactly one row (totalSets = 1), unchanged.
+                        const totalSets = item.sets ?? 1;
+                        return Array.from({ length: totalSets }, (_, setIdx) => {
+                          const rowKey = `${block.id}-${idx}-${setIdx}`;
+                          const repsKey = `${block.id}-${idx}-${setIdx}`;
+                          const setCompleted = completedSets.includes(`${idx}-${setIdx}`);
+                          const setSkipped = skipped.includes(idx);
+                          // For a completed workout every performed set is done.
+                          // For a stopped one, a set counts as not-reached only if
+                          // the item was never completed AND this set wasn't done.
+                          const notReached = isStopped && !completed.includes(idx) && !setCompleted && !setSkipped;
+                          const isMultiSet = totalSets > 1;
+                          return (
+                            <CompletionExerciseRow
+                              key={rowKey} rowKey={rowKey} repsKey={repsKey} item={item}
+                              label={isMultiSet ? `set ${setIdx + 1}` : undefined}
+                              isSkipped={setSkipped}
+                              isNotReached={notReached}
+                              actualReps={actualReps} actualWeights={actualWeights} actualDurations={actualDurations}
+                              expandedKey={reviewExpandedKey}
+                              onToggle={() => setReviewExpandedKey(reviewExpandedKey === rowKey ? null : rowKey)}
+                              onChangeReps={(k, v) => setActualReps((prev) => ({ ...prev, [k]: v }))}
+                              onChangeWeight={(k, v) => setActualWeights((prev) => ({ ...prev, [k]: v }))}
+                              onChangeDuration={(k, v) => setActualDurations((prev) => ({ ...prev, [k]: v }))}
+                              onUnskip={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: (prev[block.id] ?? []).filter((i) => i !== idx) }))}
+                              onMarkSkipped={() => setSkippedByBlock((prev) => ({ ...prev, [block.id]: [...(prev[block.id] ?? []), idx] }))}
+                              color={bColor}
+                            />
+                          );
+                        });
                       })
                     )}
                   </View>
@@ -1877,10 +1933,15 @@ export default function ExecutionScreen() {
     return totalSets > 1 ? `Set ${manualSetIdx + 1}/${totalSets} Done` : 'Exercise Done';
   })();
 
-  // Actual reps key for current exercise
+  // Actual reps key for current exercise. The set index is part of the key so
+  // that editing reps/weight during one set of a multi-set exercise does NOT
+  // bleed into the other sets — each set stays independently editable. Juarez
+  // is keyed by step (no `sets`), and EMOM by minute, so neither adds setIdx.
   const repsKey = phase === 'emom'
     ? `${currentBlock?.id ?? 'e'}-${emomStep}`
-    : `${currentBlock?.id ?? 'x'}-${manualIdx}`;
+    : currentBlock?.type === 'juarez'
+      ? `${currentBlock?.id ?? 'j'}-${manualIdx}`
+      : `${currentBlock?.id ?? 'x'}-${manualIdx}-${manualSetIdx}`;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>

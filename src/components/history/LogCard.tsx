@@ -173,6 +173,7 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
                           >
                             {item.exerciseName}
                             {item.emomMinute ? ` (min ${item.emomMinute})` : ''}
+                            {item.setNumber ? ` (set ${item.setNumber})` : ''}
                           </Text>
                           <Text
                             style={[

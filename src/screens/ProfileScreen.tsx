@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,6 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSettings } from '../context/SettingsContext';
 import { useAppContext } from '../context/AppContext';
@@ -24,6 +23,7 @@ import ObjectiveCard from '../components/profile/ObjectiveCard';
 import AddObjectiveModal from '../components/profile/AddObjectiveModal';
 import { computeProgress } from '../utils/objectives';
 import {
+  enableHealth,
   getLatestBodyMetrics,
   isHealthAvailable,
 } from '../services/health';
@@ -71,15 +71,30 @@ export default function ProfileScreen() {
     setShowAddObjective(true);
   };
 
+  // Keep the freshest `updateProfile` for the async Health pull. updateProfile
+  // is recreated each render, so we read it through a ref to avoid stale
+  // closures inside the pull handler.
+  const updateProfileRef = useRef(updateProfile);
+  updateProfileRef.current = updateProfile;
+
   /**
    * Pull the latest weight + body fat from Apple Health and apply only the
    * readings newer than what's stored. Manual edits (which don't set the
    * `*UpdatedAt` timestamps) are never overwritten by an older Health sample.
+   *
+   * This is the ONLY entry point that touches HealthKit — it's wired to the Sync
+   * button, never auto-fired on focus. Calling HealthKit on a device without the
+   * entitlement crashes the app (native kill), so it must be opt-in.
    */
-  const pullFromHealth = useCallback(async () => {
+  const pullFromHealth = async () => {
     if (!isHealthAvailable()) return;
     setHealthLoading(true);
     try {
+      // Opt into native calls first. enableHealth stays false on devices where
+      // the module/entitlement is missing, so getLatestBodyMetrics becomes a
+      // harmless no-op rather than a crash.
+      const ok = await enableHealth();
+      if (!ok) return;
       const metrics = await getLatestBodyMetrics();
       const current = profileRef.current;
       const patch: Partial<typeof profile> = {};
@@ -99,21 +114,12 @@ export default function ProfileScreen() {
         }
       }
       if (Object.keys(patch).length > 0) {
-        await updateProfile(patch);
+        await updateProfileRef.current(patch);
       }
     } finally {
       setHealthLoading(false);
     }
-  }, [updateProfile]);
-
-  // Auto-fetch once when the tab gains focus (iOS only). Skipped on subsequent
-  // re-focuses within the same session to avoid surprising overwrites; the user
-  // can always tap the refresh button to re-pull.
-  useFocusEffect(
-    useCallback(() => {
-      pullFromHealth();
-    }, [pullFromHealth]),
-  );
+  };
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>

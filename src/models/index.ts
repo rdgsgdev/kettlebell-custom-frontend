@@ -199,6 +199,7 @@ export interface ItemLog {
   skipped?: boolean;
   emomMinute?: number; // only for EMOM items
   juarezRound?: number; // only for Juarez Valley items — 1-indexed round number
+  setNumber?: number; // only for multi-set standard items — 1-indexed set number
   durationSeconds?: number; // performed seconds for countdown/countup holds
 }
 
