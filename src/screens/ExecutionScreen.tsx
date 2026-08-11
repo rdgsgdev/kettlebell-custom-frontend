@@ -31,6 +31,11 @@ import QuickTimerConfigModal, {
 
 type Phase = 'idle' | 'exercise' | 'rest' | 'emom' | 'done' | 'stopped';
 
+// Auto-save countdown shown in the "Save to History" button on the completion
+// screen. Starts when the workout ends; pauses while the user edits an exercise
+// (a review row is expanded); auto-saves at zero.
+const SAVE_COUNTDOWN_SECONDS = 30;
+
 /**
  * Total execution steps (= rounds) for a Juarez Valley block. Always N, the
  * starting rep count, for BOTH single and superset:
@@ -311,6 +316,10 @@ export default function ExecutionScreen() {
   const [editingField, setEditingField] = useState<'reps' | 'weight' | null>(null);
   // Which completion-screen review row is expanded
   const [reviewExpandedKey, setReviewExpandedKey] = useState<string | null>(null);
+  // Auto-save countdown (seconds remaining) shown in the "Save to History"
+  // button on the completion screen. null while the countdown is paused (e.g.
+  // while the user is editing a review row) so the button can hide the number.
+  const [saveCountdownSecs, setSaveCountdownSecs] = useState<number | null>(null);
   // Alarm
   const [alarmNotifId, setAlarmNotifId] = useState<string | null>(null);
   const [alarmCountdownSecs, setAlarmCountdownSecs] = useState<number | null>(null);
@@ -345,6 +354,14 @@ export default function ExecutionScreen() {
   restNotifIdRef.current = restNotifId;
   const savedStateRef = useRef<SavedState | null>(null);
   const savingRef = useRef(false);
+  // Auto-save countdown state (mirrors the alarm countdown pattern: refs keep a
+  // fresh value for the interval callback). `saveCountdownPausedRef` tracks
+  // whether a review row is currently expanded (paused); `confirmLogRef` holds
+  // the latest confirmLog so the auto-save effect can call it without re-running.
+  const saveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const saveCountdownSecsRef = useRef(0);
+  const saveCountdownPausedRef = useRef(false);
+  const confirmLogRef = useRef<() => void>(() => {});
   const [hasSaved, setHasSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const soundWarningRef = useRef<Audio.Sound | null>(null);
@@ -361,6 +378,8 @@ export default function ExecutionScreen() {
   manualIdxRef.current = manualIdx;
   manualSetIdxRef.current = manualSetIdx;
   templateRef.current = template;
+  saveCountdownSecsRef.current = saveCountdownSecs ?? 0;
+  saveCountdownPausedRef.current = reviewExpandedKey !== null;
 
   // ── Keep screen awake during workout ───────────────────────────────────────
   const isActive = phase !== 'idle' && phase !== 'done' && phase !== 'stopped';
@@ -413,6 +432,18 @@ export default function ExecutionScreen() {
       clearInterval(alarmIntervalRef.current);
       alarmIntervalRef.current = null;
     }
+  }, []);
+
+  // ── Stop the auto-save countdown interval ─────────────────────────────────
+  // Clears the ticking interval and hides the countdown. Does NOT reset the
+  // seconds state on its own — callers do that (or the completion screen mount
+  // effect re-seeds it when the user lands on the screen again).
+  const stopSaveCountdown = useCallback(() => {
+    if (saveIntervalRef.current) {
+      clearInterval(saveIntervalRef.current);
+      saveIntervalRef.current = null;
+    }
+    setSaveCountdownSecs(null);
   }, []);
 
   // ── Stop the exercise duration timer (countdown or count-up) ────────────────
@@ -1248,6 +1279,8 @@ export default function ExecutionScreen() {
   const handleResume = () => {
     const saved = savedStateRef.current;
     if (!saved) return;
+    // Resume returns to the active workout — abandon the completion auto-save.
+    stopSaveCountdown();
     setPhase(saved.phase);
     setBlockIdx(saved.blockIdx);
     setManualIdx(saved.manualIdx);
@@ -1285,6 +1318,7 @@ export default function ExecutionScreen() {
   const handleDiscard = () => {
     savedStateRef.current = null;
     stopTimer();
+    stopSaveCountdown();
     setAdhocTemplate(null);
     // Cancel any pending rest-over notification so it doesn't fire after discard.
     cancelRestOverNotification(restNotifIdRef.current);
@@ -1439,6 +1473,7 @@ export default function ExecutionScreen() {
     setHasSaved(true);
     savedStateRef.current = null;
     stopTimer();
+    stopSaveCountdown();
     setAdhocTemplate(null);
     setPhase('idle');
     setNote('');
@@ -1457,6 +1492,50 @@ export default function ExecutionScreen() {
     restNotifIdRef.current = null;
     restEndsAtRef.current = null;
   };
+
+  // Keep a fresh confirmLog reference so the auto-save countdown (started once
+  // on mount of the completion screen) can invoke the latest version without
+  // restarting its interval on every render.
+  confirmLogRef.current = confirmLog;
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Auto-save countdown: started when the user reaches the completion screen
+  // (phase 'done' or 'stopped'), paused while a review row is being edited, and
+  // auto-saves the workout (then returns to the idle workout-picker) when it
+  // reaches zero. The interval ticks every second; the completion-screen guard
+  // + paused check live in refs so the interval callback (registered once) sees
+  // the current values rather than the values captured on mount.
+  useEffect(() => {
+    if (phase !== 'done' && phase !== 'stopped') return; // only on completion screen
+    saveCountdownSecsRef.current = SAVE_COUNTDOWN_SECONDS;
+    setSaveCountdownSecs(SAVE_COUNTDOWN_SECONDS);
+    saveIntervalRef.current = setInterval(() => {
+      // Paused while editing a review row — hold the remaining time steady.
+      if (saveCountdownPausedRef.current) return;
+      // Already saved / left the completion screen — stop the interval.
+      if (saveIntervalRef.current == null) return;
+      const next = saveCountdownSecsRef.current - 1;
+      if (next <= 0) {
+        // Countdown elapsed — save the workout and return to the picker. Uses
+        // the latest confirmLog via the ref so it sees current edit state.
+        confirmLogRef.current();
+        return;
+      }
+      saveCountdownSecsRef.current = next;
+      setSaveCountdownSecs(next);
+    }, 1000);
+    return () => {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current);
+        saveIntervalRef.current = null;
+      }
+    };
+  }, [phase]);
+
+  // Clear the countdown when the component unmounts (e.g. navigating away from
+  // Execution entirely). Mirrors the existing stopTimer / stopAlarmInterval
+  // unmount cleanup.
+  useEffect(() => () => stopSaveCountdown(), [stopSaveCountdown]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Derived display values
@@ -1836,6 +1915,9 @@ export default function ExecutionScreen() {
               >
                 <Ionicons name="save-outline" size={18} color="#fff" />
                 <Text style={styles.saveBtnText}>Save to History</Text>
+                {saveCountdownSecs !== null && saveCountdownSecs > 0 && (
+                  <Text style={styles.saveBtnCountdown}>{saveCountdownSecs}s</Text>
+                )}
               </TouchableOpacity>
             )}
             {hasSaved && (
@@ -2589,6 +2671,9 @@ function makeStyles(c: typeof Colors) {
   noteInput: { backgroundColor: c.surface, borderRadius: Radius.md, borderWidth: 1, borderColor: c.border, padding: Spacing.md, ...Typography.body, color: c.textPrimary, minHeight: 80, textAlignVertical: 'top' },
   saveBtn: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, backgroundColor: c.accent, borderRadius: Radius.full, paddingVertical: 18, shadowColor: c.accent, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 16, elevation: 8 },
   saveBtnText: { ...Typography.bodyBold, color: '#fff' },
+  // Auto-save countdown badge inside the Save button. Muted against the accent
+  // fill so it reads as secondary info, not a competing call to action.
+  saveBtnCountdown: { ...Typography.captionBold, color: 'rgba(255,255,255,0.7)', marginLeft: 4 },
   saveErrorBanner: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderRadius: Radius.md, paddingVertical: Spacing.sm, paddingHorizontal: Spacing.md, marginBottom: Spacing.sm },
   saveErrorText: { ...Typography.caption, flexShrink: 1 },
   resumeBtn: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, borderRadius: Radius.full, paddingVertical: 16, borderWidth: 1.5, borderColor: c.accent },

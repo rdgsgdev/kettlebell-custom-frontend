@@ -42,6 +42,29 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
     onUpdate(next);
   };
 
+  /**
+   * Unskip an item: clear the skipped flag and mark it completed, keeping its
+   * planned reps/weight/duration (still editable inline afterward). Also
+   * recomputes the log's isPartial so the PARTIAL badge/border clear once no
+   * skipped or incomplete items remain. Matches the original semantics in
+   * ExecutionScreen.confirmLog where isPartial = stopped || hasSkipped: a
+   * stopped-early workout leaves an incomplete tail (!completed && !skipped),
+   * so it stays partial until everything is complete.
+   */
+  const unskipItem = (itemId: string) => {
+    const itemLogs = log.itemLogs.map((it) =>
+      it.id === itemId ? { ...it, skipped: false, completed: true } : it,
+    );
+    const hasSkipped = itemLogs.some((i) => i.skipped);
+    const hasIncomplete = itemLogs.some((i) => !i.completed && !i.skipped);
+    const next: WorkoutLog = {
+      ...log,
+      itemLogs,
+      isPartial: hasSkipped || hasIncomplete,
+    };
+    onUpdate(next);
+  };
+
   /** Replace the note and persist. */
   const commitNote = () => {
     if (noteDraft === null) return;
@@ -153,11 +176,14 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
                     const isUnilateral = item.repMode !== 'bilateral' && item.repsLeft != null;
                     const canEdit = !item.skipped;
                     const canEditWeight = !item.skipped && item.weight > 0;
+                    // Skipped rows aren't editable inline, but they're tappable so
+                    // the "Mark as completed" (unskip) action can be revealed.
+                    const canToggle = canEdit || canEditWeight || item.skipped;
                     return (
                       <View key={item.id}>
                         <TouchableOpacity
                           style={[styles.itemRow, !item.completed && styles.itemRowIncomplete]}
-                          onPress={() => (canEdit || canEditWeight) && setEditingItemId(isEditing ? null : item.id)}
+                          onPress={() => canToggle && setEditingItemId(isEditing ? null : item.id)}
                           activeOpacity={0.7}
                         >
                           <Ionicons
@@ -190,7 +216,7 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
                                   : `${item.reps}${item.repMode !== 'bilateral' ? '×2' : ''} reps`}
                             {!item.skipped && item.weight > 0 ? ` · ${item.weight}kg` : ''}
                           </Text>
-                          {(canEdit || canEditWeight) && (
+                          {canToggle && (
                             <Ionicons
                               name={isEditing ? 'chevron-up' : 'pencil-outline'}
                               size={13}
@@ -199,7 +225,20 @@ export default function LogCard({ log, onDelete, onUpdate }: Props) {
                           )}
                         </TouchableOpacity>
 
-                        {isEditing && (canEdit || canEditWeight) && (
+                        {isEditing && item.skipped && (
+                          <View style={styles.itemEditSection}>
+                            <TouchableOpacity
+                              onPress={() => unskipItem(item.id)}
+                              style={styles.unskipBtn}
+                              activeOpacity={0.7}
+                            >
+                              <Ionicons name="checkmark-circle" size={14} color="#fff" />
+                              <Text style={styles.unskipText}>Mark as completed</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {isEditing && !item.skipped && (canEdit || canEditWeight) && (
                           <View style={styles.itemEditSection}>
                             {/* Duration (for countdown/countup holds) OR reps */}
                             {canEdit && item.durationSeconds != null ? (
@@ -389,6 +428,17 @@ function makeStyles(c: typeof Colors) {
       backgroundColor: c.accent,
     },
     noteSaveText: { ...Typography.captionBold, color: '#fff' },
+    unskipBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: Spacing.xs,
+      paddingVertical: Spacing.sm,
+      borderRadius: Radius.md,
+      backgroundColor: c.accent,
+      marginTop: Spacing.sm,
+    },
+    unskipText: { ...Typography.captionBold, color: '#fff' },
     block: {
       marginTop: Spacing.sm,
     },
