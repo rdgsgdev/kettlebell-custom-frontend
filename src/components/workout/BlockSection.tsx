@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { WorkoutItem, BlockType } from '../../models';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import WorkoutItemRow from './WorkoutItemRow';
-import { generateId } from '../../utils/helpers';
+import { generateId, supersetGroupRange } from '../../utils/helpers';
 import { useSettings } from '../../context/SettingsContext';
 
 interface Props {
@@ -40,6 +40,9 @@ export default function BlockSection({
   const styles = makeStyles(colors);
   const [localItems, setLocalItems] = useState(items);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  // Superset linking only applies to standard (sets/reps) blocks — EMOM cycles
+  // by minute and Juarez has its own fixed 1-or-2 exercise model.
+  const linkEnabled = blockType !== 'emom' && blockType !== 'juarez';
 
   // Keep localItems in sync when items prop changes from outside (add/delete)
   // but not while a drag is in progress
@@ -94,13 +97,35 @@ export default function BlockSection({
   };
 
   const updateItem = (id: string, patch: Partial<WorkoutItem>) => {
+    const idx = localItems.findIndex((i) => i.id === id);
+    if (idx < 0) return;
     const updated = localItems.map((item) => (item.id === id ? { ...item, ...patch } : item));
     setLocalItems(updated);
     onChange(updated);
   };
 
+  // Toggle the superset link from item `idx` to the next item. A group's round
+  // count is the FIRST member's Sets (read at execution time), so linking only
+  // flips the flag — it never mutates any item's Sets. That keeps standalone
+  // exercises (like a non-superset third exercise) fully independent.
+  const toggleLink = (idx: number) => {
+    if (idx < 0 || idx >= localItems.length - 1) return;
+    const turningOn = !localItems[idx].supersetWithNext;
+    const updated = localItems.map((it, i) => (i === idx ? { ...it, supersetWithNext: turningOn } : it));
+    setLocalItems(updated);
+    onChange(updated);
+  };
+
   const deleteItem = (id: string) => {
-    const updated = localItems.filter((item) => item.id !== id);
+    let updated = localItems.filter((item) => item.id !== id);
+    // Deleting the last item can leave a dangling link on the new last item
+    // (it used to point at the deleted exercise). Clear it so groups stay
+    // well-formed — a link is only meaningful when there's a next item.
+    if (updated.length > 0 && updated[updated.length - 1].supersetWithNext) {
+      updated = updated.map((it, i) =>
+        i === updated.length - 1 ? { ...it, supersetWithNext: false } : it,
+      );
+    }
     setLocalItems(updated);
     onChange(updated);
   };
@@ -130,6 +155,10 @@ export default function BlockSection({
           onMoveDown={() => handleMoveDown(item.id)}
           onDragStart={() => handleDragStart(item.id)}
           onDragEnd={() => handleDragEnd(localItems)}
+          linkedToNext={!!item.supersetWithNext}
+          linkedFromPrev={idx > 0 && !!localItems[idx - 1].supersetWithNext}
+          isLastItem={idx === localItems.length - 1}
+          onToggleLink={linkEnabled ? () => toggleLink(idx) : undefined}
         />
       ))}
 

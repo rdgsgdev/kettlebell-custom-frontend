@@ -157,6 +157,12 @@ export interface WorkoutItem {
   executionType?: ExecutionType; // 'reps' | 'countdown' | 'countup'. undefined → derived (see getExecutionType)
   weight: number;
   restTime: number;
+  /** Standard (sets/reps) blocks only. true = this exercise is linked to the
+   *  next one as a single superset group: they cycle back-to-back each set, then
+   *  rest, then repeat. A group is a maximal run of consecutive items where each
+   *  (except the last) has this flag set. Standalone items (flag false/undefined)
+   *  run one after the other as normal. */
+  supersetWithNext?: boolean;
 }
 
 export interface WorkoutBlock {
