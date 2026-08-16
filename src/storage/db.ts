@@ -241,6 +241,40 @@ export async function dbLoadTemplates(): Promise<WorkoutTemplate[]> {
 
 export async function dbUpsertTemplate(tpl: WorkoutTemplate, dirty = true): Promise<void> {
   await tx(async (db) => {
+    let blocksToStore = tpl.blocks;
+    if (!dirty) {
+      // Sync pull (remote → local). The Supabase workout_items table has no
+      // superset_with_next column yet, so a remote row would silently wipe
+      // locally-configured superset groups. Re-apply the local flags (matched by
+      // block + item id) before overwriting so the feature survives a sync.
+      // TODO: drop this once the backend gains a superset_with_next column and
+      // api.ts maps it both ways.
+      try {
+        const existing = await db.getFirstAsync<{ blocks: string }>(
+          'SELECT blocks FROM templates WHERE id = ?',
+          [tpl.id],
+        );
+        if (existing?.blocks) {
+          const prevBlocks = JSON.parse(existing.blocks) as WorkoutBlock[];
+          const linked = new Set<string>();
+          for (const b of prevBlocks) {
+            for (const it of b.items) {
+              if (it.supersetWithNext) linked.add(`${b.id}|${it.id}`);
+            }
+          }
+          if (linked.size > 0) {
+            blocksToStore = tpl.blocks.map((b) => ({
+              ...b,
+              items: b.items.map((it) =>
+                linked.has(`${b.id}|${it.id}`) ? { ...it, supersetWithNext: true } : { ...it },
+              ),
+            }));
+          }
+        }
+      } catch {
+        // non-fatal — fall back to storing the remote blocks as-is
+      }
+    }
     await db.runAsync(
       `INSERT INTO templates (id, name, blocks, alarm_minutes, archived, created_at, updated_at, deleted_at, dirty)
        VALUES (?,?,?,?,?,?,?,?,?)
@@ -251,7 +285,7 @@ export async function dbUpsertTemplate(tpl: WorkoutTemplate, dirty = true): Prom
       [
         tpl.id,
         tpl.name,
-        JSON.stringify(tpl.blocks),
+        JSON.stringify(blocksToStore),
         tpl.alarmMinutes ?? null,
         tpl.archived ? 1 : 0,
         tpl.createdAt,

@@ -7,6 +7,13 @@ interface Props extends Omit<TextInputProps, 'value' | 'onChangeText' | 'keyboar
   /** Minimum valid value (default 0) */
   min?: number;
   isFloat?: boolean;
+  /**
+   * When true, `onCommit` fires once on blur (with a valid value) instead of on
+   * every keystroke. Use this when the parent is expensive to re-render — e.g.
+   * the execution screen, where a per-keystroke commit re-renders the whole
+   * workout and can stall the JS thread mid-workout.
+   */
+  commitOnBlur?: boolean;
   onBlur?: TextInputProps['onBlur'];
 }
 
@@ -21,6 +28,7 @@ export default function NumericInput({
   onCommit,
   min = 0,
   isFloat = false,
+  commitOnBlur = false,
   onBlur,
   ...rest
 }: Props) {
@@ -39,6 +47,9 @@ export default function NumericInput({
 
   const handleChange = (v: string) => {
     setText(v);
+    // In commitOnBlur mode, defer the commit to blur so typing doesn't re-render
+    // the (potentially huge) parent on every keystroke.
+    if (commitOnBlur) return;
     const n = parse(v);
     if (!isNaN(n) && n >= min) {
       prevValueRef.current = n;
@@ -51,6 +62,9 @@ export default function NumericInput({
     if (isNaN(n) || n < min) {
       setText(String(value));
       prevValueRef.current = value;
+    } else if (commitOnBlur) {
+      prevValueRef.current = n;
+      onCommit(n);
     }
     onBlur?.(e);
   };

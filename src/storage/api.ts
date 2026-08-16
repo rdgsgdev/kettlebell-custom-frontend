@@ -241,6 +241,11 @@ export async function apiUpsertTemplate(tpl: WorkoutTemplate): Promise<void> {
 
     for (let ii = 0; ii < blk.items.length; ii++) {
       const it = blk.items[ii];
+      // TODO(superset): `it.supersetWithNext` is intentionally NOT mapped here.
+      // The backend workout_items table has no superset_with_next column, and
+      // sending an unknown column makes PostgREST reject the whole upsert. Once
+      // the column exists, add it here (+ in BlockRow/ItemRow and itemFromRow)
+      // and remove the local-preservation shim in db.ts dbUpsertTemplate.
       const { error: iErr } = await supabase.from('workout_items').upsert(
         {
           id: it.id,
