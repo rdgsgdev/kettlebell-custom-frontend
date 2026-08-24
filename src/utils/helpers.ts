@@ -77,6 +77,28 @@ export function getExecutionType(item: { executionType?: ExecutionType; duration
   return (item.durationSeconds ?? 0) > 0 ? 'countdown' : 'reps';
 }
 
+/**
+ * Returns the `[start, end]` index range (inclusive) of the superset group that
+ * contains `idx`. A group is a maximal run of consecutive items where each item
+ * except the last has `supersetWithNext === true`. A standalone item (no links
+ * touching it) is its own size-1 group, so `[idx, idx]` is returned.
+ *
+ * Used by both the workout editor and the execution engine so they agree on
+ * where a superset group starts and ends.
+ */
+export function supersetGroupRange(items: WorkoutItem[], idx: number): [number, number] {
+  let start = idx;
+  while (start > 0 && items[start - 1].supersetWithNext) start--;
+  let end = idx;
+  while (end < items.length - 1 && items[end].supersetWithNext) end++;
+  return [start, end];
+}
+
+/** True if any item in the block is part of a multi-exercise superset group. */
+export function blockHasSuperset(items: WorkoutItem[]): boolean {
+  return items.some((it) => it.supersetWithNext);
+}
+
 export function blockColor(type: BlockType): string {
   switch (type) {
     case 'starter': return Colors.starterColor;

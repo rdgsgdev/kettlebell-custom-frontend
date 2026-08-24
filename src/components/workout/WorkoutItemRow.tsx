@@ -27,6 +27,16 @@ interface Props {
   onMoveDown?: () => void;
   onDragStart?: () => void;
   onDragEnd?: () => void;
+  /** True when this item is linked to the next as a superset. */
+  linkedToNext?: boolean;
+  /** True when the previous item links into this one (this row is a group
+   *  continuation). Drives the grouped visual treatment. */
+  linkedFromPrev?: boolean;
+  /** True for the last item in the block — the link-to-next toggle is hidden
+   *  there (nothing to link to). */
+  isLastItem?: boolean;
+  /** Toggle the superset link from this item to the next. */
+  onToggleLink?: () => void;
 }
 
 export default function WorkoutItemRow({
@@ -42,6 +52,10 @@ export default function WorkoutItemRow({
   onMoveDown,
   onDragStart,
   onDragEnd,
+  linkedToNext = false,
+  linkedFromPrev = false,
+  isLastItem = false,
+  onToggleLink,
 }: Props) {
   const { exercises } = useAppContext();
   const { colors } = useSettings();
@@ -149,7 +163,16 @@ export default function WorkoutItemRow({
         {...dragPanResponder.panHandlers}
       >
         <SwipeableRow onDelete={onDelete} borderRadius={Radius.md} compact={!expanded}>
-          <View style={[styles.container, isDragging && { borderColor: accentColor }]}>
+          <View
+            style={[
+              styles.container,
+              isDragging && { borderColor: accentColor },
+              // Highlight the left edge of every row that's part of a superset
+              // group so linked exercises read as a single block at a glance.
+              (linkedToNext || linkedFromPrev) && styles.containerGrouped,
+              (linkedToNext || linkedFromPrev) && { borderLeftColor: accentColor },
+            ]}
+          >
       <TouchableOpacity
         onPress={() => setExpanded((e) => !e)}
         onLongPress={() => {
@@ -204,6 +227,21 @@ export default function WorkoutItemRow({
               }
             })()}
           </Text>
+          {/* Superset link-to-next toggle (standard blocks only, hidden on the
+              last item — there's nothing to link to). */}
+          {onToggleLink && !isLastItem && (
+            <TouchableOpacity
+              onPress={onToggleLink}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={linkedToNext ? 'Remove superset link' : 'Superset with next exercise'}
+            >
+              <Ionicons
+                name={linkedToNext ? 'link' : 'link-outline'}
+                size={17}
+                color={linkedToNext ? accentColor : colors.textTertiary}
+              />
+            </TouchableOpacity>
+          )}
           <Ionicons
             name={expanded ? 'chevron-up' : 'chevron-down'}
             size={16}
@@ -214,6 +252,17 @@ export default function WorkoutItemRow({
 
       {expanded && (
         <View style={styles.details}>
+          {/* Superset membership note (standard blocks only). */}
+          {(linkedToNext || linkedFromPrev) && (
+            <View style={styles.supersetHintRow}>
+              <Ionicons name="link" size={13} color={accentColor} />
+              <Text style={[styles.supersetHintText, { color: accentColor }]}>
+                {linkedFromPrev
+                  ? 'Superset group · shared rounds'
+                  : 'Superset group · sets the round count'}
+              </Text>
+            </View>
+          )}
           {/* Exercise type: Reps / Countdown / Count-up — only for blocks where reps are manual */}
           {showRestTime && repsEditable && (
             <View style={styles.fieldRow}>
@@ -322,19 +371,27 @@ export default function WorkoutItemRow({
                       selectTextOnFocus
                     />
                   </View>
-                  {showRestTime && (
-                    <View style={styles.numericField}>
-                      <Text style={styles.fieldLabel}>Sets</Text>
-                      <NumericInput
-                        style={styles.numericInput}
-                        value={item.sets ?? 1}
-                        onCommit={(n) => onUpdate({ sets: n })}
-                        min={1}
-                        returnKeyType="done"
-                        selectTextOnFocus
-                      />
-                    </View>
-                  )}
+                  {showRestTime &&
+                    (linkedFromPrev ? (
+                      // Non-first member of a superset group: rounds come from
+                      // the group's first exercise, so Sets isn't editable here.
+                      <View style={styles.numericField}>
+                        <Text style={styles.fieldLabel}>Sets</Text>
+                        <Text style={styles.sharedNote}>shared</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.numericField}>
+                        <Text style={styles.fieldLabel}>Sets</Text>
+                        <NumericInput
+                          style={styles.numericInput}
+                          value={item.sets ?? 1}
+                          onCommit={(n) => onUpdate({ sets: n })}
+                          min={1}
+                          returnKeyType="done"
+                          selectTextOnFocus
+                        />
+                      </View>
+                    ))}
                 </>
               );
             })()}
@@ -381,6 +438,19 @@ function makeStyles(c: typeof Colors) {
       borderRadius: Radius.md,
       borderWidth: 1,
       borderColor: c.border,
+    },
+    // Superset group members get a thick accent stripe on the left edge so the
+    // linked exercises visually cluster into one block.
+    containerGrouped: {
+      borderLeftWidth: 3,
+    },
+    supersetHintRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: Spacing.xs,
+    },
+    supersetHintText: {
+      ...Typography.captionBold,
     },
     mainRow: {
       flexDirection: 'row',
@@ -469,6 +539,15 @@ function makeStyles(c: typeof Colors) {
       color: c.textTertiary,
       fontStyle: 'italic',
       paddingTop: Spacing.sm,
+    },
+    // "shared" label shown in place of the Sets input for non-first superset
+    // group members (their rounds come from the group's first exercise).
+    sharedNote: {
+      ...Typography.bodyBold,
+      color: c.textTertiary,
+      fontStyle: 'italic',
+      textAlign: 'center',
+      paddingVertical: Spacing.sm,
     },
   });
 }

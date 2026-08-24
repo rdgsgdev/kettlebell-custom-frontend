@@ -20,7 +20,7 @@ import { useAppContext } from '../context/AppContext';
 import { useSettings } from '../context/SettingsContext';
 import { WorkoutItem, WorkoutBlock, WorkoutTemplate, WorkoutLog, ItemLog } from '../models';
 import { Colors, Spacing, Radius, Typography } from '../theme';
-import { generateId, formatDuration, formatCountdown, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, getExecutionType } from '../utils/helpers';
+import { generateId, formatDuration, formatCountdown, blockDim, getBlockDisplayColor, getBlockDisplayLabel, juarezRepsForRound, getExecutionType, supersetGroupRange, blockHasSuperset } from '../utils/helpers';
 import { scheduleAlarm, cancelAlarm, scheduleRestOverNotification, cancelRestOverNotification } from '../utils/notifications';
 import NumericInput from '../components/common/NumericInput';
 import ExerciseDetailModal from '../components/exercises/ExerciseDetailModal';
@@ -78,6 +78,99 @@ function juarezStepInfo(
   }
   // Single exercise: use the interleaved pyramid directly.
   return { itemIdx: 0, reps: juarezRepsForRound(step, startingReps), round: step };
+}
+
+// ── Standard-block advancement (sets/reps blocks, including superset groups) ─
+//
+// A superset "group" is a maximal run of consecutive items linked via
+// `supersetWithNext`; a standalone item is a group of size 1. Within a group
+// the exercises cycle back-to-back each set, then rest, then repeat for the
+// group's shared Sets count (members are kept in sync by the editor).
+//
+// `planStandardAdvance` returns the next step after completing one performance;
+// `planStandardPrevious` returns the previous performance (for the Previous
+// button). Both are pure so the three advancement call sites — reps Done,
+// count-up Stop & Record, and the countdown auto-finish — stay consistent, and
+// so a standalone item behaves exactly like today (size-1 group).
+type StandardAdvance =
+  | { kind: 'done' }
+  | { kind: 'next'; nextIdx: number; nextSet: number }
+  | { kind: 'rest'; seconds: number; nextIdx: number; nextSet: number; nextLabel: string };
+
+/** Shared round count for the group that starts at `start` (= its first item's Sets). */
+function standardGroupRounds(items: WorkoutItem[], start: number): number {
+  return items[start]?.sets ?? 1;
+}
+
+function planStandardAdvance(
+  block: WorkoutBlock,
+  itemIdx: number,
+  setIdx: number,
+): StandardAdvance {
+  const items = block.items;
+  // Defensive: manualIdx can transiently be past the end right after a block's
+  // last performance (before the block-advance watcher fires). Treat that as
+  // "block done" so display code that calls this never indexes out of range.
+  if (items.length === 0 || itemIdx >= items.length) return { kind: 'done' };
+  const [start, end] = supersetGroupRange(items, itemIdx);
+  const isMulti = end > start;
+  const rounds = standardGroupRounds(items, start);
+  const isLastInGroup = itemIdx >= end;
+  const isLastSet = setIdx >= rounds - 1;
+  const nameAt = (i: number) => items[i]?.exerciseName || 'next exercise';
+
+  if (!isLastInGroup) {
+    // Back-to-back to the next exercise in the group — same set, no rest.
+    return { kind: 'next', nextIdx: itemIdx + 1, nextSet: setIdx };
+  }
+  // Last exercise of the group just completed — rest (if any) uses its restTime.
+  const rest = items[end].restTime ?? 0;
+  if (!isLastSet) {
+    // Another round of the same group: wrap to its first exercise, next set.
+    const nextIdx = start;
+    const nextSet = setIdx + 1;
+    const nextLabel = isMulti
+      ? `Set ${nextSet + 1} – ${nameAt(start)}`
+      : `${nameAt(start)} (set ${nextSet + 1})`;
+    return rest > 0
+      ? { kind: 'rest', seconds: rest, nextIdx, nextSet, nextLabel }
+      : { kind: 'next', nextIdx, nextSet };
+  }
+  // Group rounds exhausted — leave the group. Land at the next standalone item,
+  // or past the end (items.length) so the block-advance watcher finishes the
+  // block. We still honor the completed exercise's trailing rest first (matching
+  // the pre-superset behavior of resting after the last exercise of a block
+  // before moving on); nextIdx past the end is what triggers that watcher.
+  const after = end + 1;
+  const atBlockEnd = after >= items.length;
+  const nextIdx = atBlockEnd ? items.length : after;
+  const nextSet = 0;
+  const nextLabel = atBlockEnd ? 'Done' : nameAt(after);
+  return rest > 0
+    ? { kind: 'rest', seconds: rest, nextIdx, nextSet, nextLabel }
+    : { kind: 'next', nextIdx, nextSet };
+}
+
+/** Previous performance before (itemIdx, setIdx), or null if at the block start. */
+function planStandardPrevious(
+  block: WorkoutBlock,
+  itemIdx: number,
+  setIdx: number,
+): { prevIdx: number; prevSet: number } | null {
+  const items = block.items;
+  const [start, end] = supersetGroupRange(items, itemIdx);
+  if (itemIdx > start) {
+    // An earlier exercise in the same group/round.
+    return { prevIdx: itemIdx - 1, prevSet: setIdx };
+  }
+  if (setIdx > 0) {
+    // First exercise of the group → last exercise of the previous round.
+    return { prevIdx: end, prevSet: setIdx - 1 };
+  }
+  // setIdx 0 at the group start → the item just before the group, last set.
+  if (start === 0) return null;
+  const prevStart = supersetGroupRange(items, start - 1)[0];
+  return { prevIdx: start - 1, prevSet: standardGroupRounds(items, prevStart) - 1 };
 }
 
 // ── Alarm state persistence ──────────────────────────────────────────────────
@@ -344,7 +437,13 @@ export default function ExecutionScreen() {
   const restSecondsRef = useRef(restSeconds);
   const exerciseTimerSecondsRef = useRef(0);
   const exerciseTimerActiveRef = useRef(false);
-  const restTypeRef = useRef<'sets' | 'exercises'>('exercises');
+  // Post-rest position + label. beginRest seeds these and the rest-end sites
+  // (the timer's rest branch + endRestNow) apply them. Position-based (rather
+  // than a 'sets'/'exercises' type) so a superset wrap-around — advance to the
+  // group's first exercise, set+1 — works exactly like every other transition.
+  const restNextIdxRef = useRef(0);
+  const restNextSetRef = useRef(0);
+  const restNextLabelRef = useRef('');
   // Wall-clock timestamp (ms) when the current rest ends; null when not resting.
   // Used so the rest countdown stays correct when the app is backgrounded (JS
   // intervals are suspended by the OS) and drives the "rest over" notification.
@@ -479,12 +578,8 @@ export default function ExecutionScreen() {
           setRestNotifId(null);
           restNotifIdRef.current = null;
           stopTimer();
-          if (restTypeRef.current === 'sets') {
-            setManualSetIdx((si) => si + 1);
-          } else {
-            setManualIdx((i) => i + 1);
-            setManualSetIdx(0);
-          }
+          setManualIdx(restNextIdxRef.current);
+          setManualSetIdx(restNextSetRef.current);
           setPhase('exercise');
         } else {
           setRestSeconds(s);
@@ -537,8 +632,10 @@ export default function ExecutionScreen() {
           if (!block) return;
           const item = block.items[idx];
           if (!item) return;
-          const totalSets = item.sets ?? 1;
-          const isLastSet = setIdx >= totalSets - 1;
+          const items = block.items;
+          const [gStart] = supersetGroupRange(items, idx);
+          const rounds = items[gStart].sets ?? 1;
+          const isLastSet = setIdx >= rounds - 1;
           // Countdown set completed (per-set, mirrors handleManualDone).
           setCompletedSetsByBlock((prev) => ({
             ...prev,
@@ -550,18 +647,20 @@ export default function ExecutionScreen() {
               [block.id]: [...(prev[block.id] ?? []), idx],
             }));
           }
-          if (item.restTime > 0) {
-            const nextLabel = isLastSet
-              ? (block.items[idx + 1]?.exerciseName || 'next exercise')
-              : `${item.exerciseName} (set ${setIdx + 2})`;
-            beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
+          // Advance via the shared planner. We deliberately do NOT call
+          // applyAdvance() here: this runs inside the (once-created) timer
+          // interval, whose captured advanceToNextBlock would be stale. For the
+          // 'done' case we instead move manualIdx past the end so the block-
+          // advance watcher (fresh closure) finishes the block.
+          const r = planStandardAdvance(block, idx, setIdx);
+          if (r.kind === 'done') {
+            setManualIdx(items.length);
+            setManualSetIdx(0);
+          } else if (r.kind === 'rest') {
+            beginRest(r.seconds, r.nextIdx, r.nextSet, r.nextLabel);
           } else {
-            if (isLastSet) {
-              setManualIdx((i) => i + 1);
-              setManualSetIdx(0);
-            } else {
-              setManualSetIdx((si) => si + 1);
-            }
+            setManualIdx(r.nextIdx);
+            setManualSetIdx(r.nextSet);
           }
         } else {
           setExerciseTimerSeconds(s);
@@ -573,13 +672,16 @@ export default function ExecutionScreen() {
 
   // ── Begin a rest period ─────────────────────────────────────────────────────
   // Sets the wall-clock end timestamp (so the countdown survives backgrounding),
-  // seeds the display, and schedules a local "rest over" notification that fires
-  // even if the user has switched to another app.
-  const beginRest = (seconds: number, type: 'sets' | 'exercises', nextLabel: string) => {
+  // seeds the display, records the (itemIdx, setIdx) to resume at once the rest
+  // ends, and schedules a local "rest over" notification that fires even if the
+  // user has switched to another app.
+  const beginRest = (seconds: number, nextIdx: number, nextSet: number, nextLabel: string) => {
     setRestSeconds(seconds);
     restSecondsRef.current = seconds;
     restEndsAtRef.current = Date.now() + seconds * 1000;
-    restTypeRef.current = type;
+    restNextIdxRef.current = nextIdx;
+    restNextSetRef.current = nextSet;
+    restNextLabelRef.current = nextLabel;
     setPhase('rest');
     startTimer();
     // Cancel any previous (shouldn't exist) before scheduling a new one.
@@ -591,19 +693,15 @@ export default function ExecutionScreen() {
   };
 
   // ── End the rest period immediately (skip or natural end) ───────────────────
-  // Clears the timestamp + notification, then advances to the next set/exercise.
+  // Clears the timestamp + notification, then advances to the recorded position.
   const endRestNow = () => {
     restEndsAtRef.current = null;
     cancelRestOverNotification(restNotifIdRef.current);
     setRestNotifId(null);
     restNotifIdRef.current = null;
     stopTimer();
-    if (restTypeRef.current === 'sets') {
-      setManualSetIdx((si) => si + 1);
-    } else {
-      setManualIdx((i) => i + 1);
-      setManualSetIdx(0);
-    }
+    setManualIdx(restNextIdxRef.current);
+    setManualSetIdx(restNextSetRef.current);
     setPhase('exercise');
   };
 
@@ -831,6 +929,19 @@ export default function ExecutionScreen() {
     }
   }, [template, blockIdx, startTimer]);
 
+  // Apply a standard-block advancement descriptor (from planStandardAdvance):
+  // finish the block, start a rest, or jump straight to the next performance.
+  const applyAdvance = (r: StandardAdvance) => {
+    if (r.kind === 'done') {
+      advanceToNextBlock();
+    } else if (r.kind === 'rest') {
+      beginRest(r.seconds, r.nextIdx, r.nextSet, r.nextLabel);
+    } else {
+      setManualIdx(r.nextIdx);
+      setManualSetIdx(r.nextSet);
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Actions
   // ─────────────────────────────────────────────────────────────────────────────
@@ -982,17 +1093,21 @@ export default function ExecutionScreen() {
         const nextStep = manualIdx + 1;
         const nextItemIdx = juarezStepInfo(nextStep, currentBlock).itemIdx;
         const nextLabel = currentBlock.items[nextItemIdx]?.exerciseName || `Round ${nextStep + 1}`;
-        beginRest(rest, 'exercises', nextLabel);
+        beginRest(rest, manualIdx + 1, 0, nextLabel);
       } else {
         setManualIdx((i) => i + 1);
       }
       return;
     }
 
-    const item = currentBlock.items[manualIdx];
+    const items = currentBlock.items;
+    const item = items[manualIdx];
     if (!item) return;
-    const totalSets = item.sets ?? 1;
-    const isLastSet = manualSetIdx >= totalSets - 1;
+    // Sets are shared across a superset group, so derive the round count from
+    // the group (a standalone item is just a size-1 group).
+    const [gStart] = supersetGroupRange(items, manualIdx);
+    const rounds = items[gStart].sets ?? 1;
+    const isLastSet = manualSetIdx >= rounds - 1;
     // Record this set as completed (per-set, before advancing). Items without
     // explicit sets collapse to a single set, so this stays correct for them.
     setCompletedSetsByBlock((prev) => ({
@@ -1005,19 +1120,7 @@ export default function ExecutionScreen() {
         [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
       }));
     }
-    if (item.restTime > 0) {
-      const nextLabel = isLastSet
-        ? (currentBlock.items[manualIdx + 1]?.exerciseName || 'next exercise')
-        : `${item.exerciseName} (set ${manualSetIdx + 2})`;
-      beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
-    } else {
-      if (isLastSet) {
-        setManualIdx((i) => i + 1);
-        setManualSetIdx(0);
-      } else {
-        setManualSetIdx((si) => si + 1);
-      }
-    }
+    applyAdvance(planStandardAdvance(currentBlock, manualIdx, manualSetIdx));
   };
 
   // ── Stop a count-up timer: record the elapsed seconds, then advance using the
@@ -1038,8 +1141,10 @@ export default function ExecutionScreen() {
     // Stop the timer.
     stopExerciseTimer();
 
-    const totalSets = item.sets ?? 1;
-    const isLastSet = manualSetIdx >= totalSets - 1;
+    const items = currentBlock.items;
+    const [gStart] = supersetGroupRange(items, manualIdx);
+    const rounds = items[gStart].sets ?? 1;
+    const isLastSet = manualSetIdx >= rounds - 1;
     // Count-up set completed (per-set, mirrors handleManualDone).
     setCompletedSetsByBlock((prev) => ({
       ...prev,
@@ -1051,34 +1156,35 @@ export default function ExecutionScreen() {
         [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
       }));
     }
-    if (item.restTime > 0) {
-      const nextLabel = isLastSet
-        ? (currentBlock.items[manualIdx + 1]?.exerciseName || 'next exercise')
-        : `${item.exerciseName} (set ${manualSetIdx + 2})`;
-      beginRest(item.restTime, isLastSet ? 'exercises' : 'sets', nextLabel);
-    } else {
-      if (isLastSet) {
-        setManualIdx((i) => i + 1);
-        setManualSetIdx(0);
-      } else {
-        setManualSetIdx((si) => si + 1);
-      }
-    }
+    applyAdvance(planStandardAdvance(currentBlock, manualIdx, manualSetIdx));
   };
 
   // Skip current exercise entirely (no rest, not marked completed)
   const handleSkipExercise = () => {
     if (!template) return;
     const currentBlock = template.blocks[blockIdx];
-    if (currentBlock) {
-      setSkippedByBlock((prev) => ({
-        ...prev,
-        [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
-      }));
-    }
+    if (!currentBlock) return;
+    setSkippedByBlock((prev) => ({
+      ...prev,
+      [currentBlock.id]: [...(prev[currentBlock.id] ?? []), manualIdx],
+    }));
     stopExerciseTimer();
-    setManualIdx((i) => i + 1);
-    setManualSetIdx(0);
+    if (currentBlock.type === 'juarez') {
+      setManualIdx((i) => i + 1);
+      setManualSetIdx(0);
+    } else {
+      // Standard block (incl. superset groups): jump to the next performance
+      // per the planner, but never enter rest (skip is a no-rest jump). This
+      // walks to the next grouped exercise / next round / next standalone item.
+      const r = planStandardAdvance(currentBlock, manualIdx, manualSetIdx);
+      if (r.kind === 'done') {
+        setManualIdx(currentBlock.items.length);
+        setManualSetIdx(0);
+      } else {
+        setManualIdx(r.nextIdx);
+        setManualSetIdx(r.nextSet);
+      }
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   };
 
@@ -1104,22 +1210,46 @@ export default function ExecutionScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   };
 
-  // Go back to the previous exercise
+  // Go back to the previous performance (the inverse of Done/Skip). For
+  // superset groups this walks back through the cycling exercises; for a
+  // standalone multi-set item it steps back one set. Marks for the performance
+  // we land on are cleared so it can be re-done and tracked fresh.
   const handlePreviousExercise = () => {
     if (!template) return;
     const currentBlock = template.blocks[blockIdx];
     stopExerciseTimer();
-    if (manualIdx > 0) {
+
+    const clearPerformance = (blockId: string, itemIdx: number, setIdx: number) => {
+      const setKey = `${itemIdx}-${setIdx}`;
+      setCompletedSetsByBlock((prev) => ({ ...prev, [blockId]: (prev[blockId] ?? []).filter((k) => k !== setKey) }));
+      setCompletedByBlock((prev) => ({ ...prev, [blockId]: (prev[blockId] ?? []).filter((i) => i !== itemIdx) }));
+      setSkippedByBlock((prev) => ({ ...prev, [blockId]: (prev[blockId] ?? []).filter((i) => i !== itemIdx) }));
+    };
+    const haptic = () => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    // Standard block (incl. superset groups): step back one performance.
+    if (currentBlock && currentBlock.type !== 'emom' && currentBlock.type !== 'juarez') {
+      const p = planStandardPrevious(currentBlock, manualIdx, manualSetIdx);
+      if (p) {
+        setManualIdx(p.prevIdx);
+        setManualSetIdx(p.prevSet);
+        clearPerformance(currentBlock.id, p.prevIdx, p.prevSet);
+        haptic();
+        return;
+      }
+    } else if (currentBlock?.type === 'juarez' && manualIdx > 0) {
+      // Juarez: manualIdx is the step index — step back one performance.
       const prevIdx = manualIdx - 1;
       setManualIdx(prevIdx);
       setManualSetIdx(0);
-      if (currentBlock) {
-        const prefix = `${prevIdx}-`;
-        setCompletedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
-        setCompletedSetsByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((k) => !k.startsWith(prefix)) }));
-        setSkippedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
-      }
-    } else if (blockIdx > 0) {
+      setCompletedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
+      setSkippedByBlock((prev) => ({ ...prev, [currentBlock.id]: (prev[currentBlock.id] ?? []).filter((i) => i !== prevIdx) }));
+      haptic();
+      return;
+    }
+
+    // At the block start → jump to the previous block's last performance.
+    if (blockIdx > 0) {
       const prevBlock = template.blocks[blockIdx - 1];
       setBlockIdx(blockIdx - 1);
       if (prevBlock.type === 'emom') {
@@ -1130,18 +1260,24 @@ export default function ExecutionScreen() {
         setEmomCompletedByBlock((prev) => ({ ...prev, [prevBlock.id]: Math.max(0, (prev[prevBlock.id] ?? 0) - 1) }));
         setPhase('emom');
         startTimer();
-      } else {
-        const lastIdx = prevBlock.items.length - 1;
-        const prefix = `${lastIdx}-`;
-        setManualIdx(lastIdx);
+      } else if (prevBlock.type === 'juarez') {
+        const lastStep = juarezStepCount(prevBlock) - 1;
+        setManualIdx(lastStep);
         setManualSetIdx(0);
-        setCompletedByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((i) => i !== lastIdx) }));
-        setCompletedSetsByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((k) => !k.startsWith(prefix)) }));
-        setSkippedByBlock((prev) => ({ ...prev, [prevBlock.id]: (prev[prevBlock.id] ?? []).filter((i) => i !== lastIdx) }));
+        setPhase('exercise');
+      } else if (prevBlock.items.length > 0) {
+        // Standard previous block → land on its last performance (last item,
+        // last set of that item's group).
+        const lastIdx = prevBlock.items.length - 1;
+        const [gStart] = supersetGroupRange(prevBlock.items, lastIdx);
+        const lastSet = Math.max(0, (prevBlock.items[gStart]?.sets ?? 1) - 1);
+        setManualIdx(lastIdx);
+        setManualSetIdx(lastSet);
+        clearPerformance(prevBlock.id, lastIdx, lastSet);
         setPhase('exercise');
       }
     }
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    haptic();
   };
 
   // Go back to the previous EMOM minute
@@ -1571,6 +1707,21 @@ export default function ExecutionScreen() {
         return `ROUND ${roundNum} / ${totalRounds}`;
       }
       const item = currentBlock.items[manualIdx];
+      const items = currentBlock.items;
+      // Past-end transient (manualIdx === items.length) while the block-advance
+      // watcher fires — show full progress and skip the group math below.
+      if (!item) {
+        return `${items.length} / ${items.length}`;
+      }
+      const [gStart, gEnd] = supersetGroupRange(items, manualIdx);
+      if (gEnd > gStart) {
+        // Inside a superset group: show round (set) progress + position within
+        // the cycling group, e.g. "SET 2/3 · 1/2".
+        const rounds = items[gStart].sets ?? 1;
+        const posInGroup = manualIdx - gStart + 1;
+        const groupSize = gEnd - gStart + 1;
+        return `SET ${manualSetIdx + 1}/${rounds} · ${posInGroup}/${groupSize}`;
+      }
       const totalSets = item?.sets ?? 1;
       const base = `${Math.min(manualIdx + 1, currentBlock.items.length)} / ${currentBlock.items.length}`;
       return totalSets > 1 ? `${base} · Set ${manualSetIdx + 1}/${totalSets}` : base;
@@ -1678,7 +1829,7 @@ export default function ExecutionScreen() {
                           ? `${block.items.length} exercises · ${block.emomMinutes} min`
                           : block.type === 'juarez'
                             ? `${block.items.length} ex · ${block.juarezStartingReps ?? 10} rounds${block.juarezSuperset ? ' superset' : ''}`
-                            : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}`
+                            : `${block.items.length} exercise${block.items.length !== 1 ? 's' : ''}${blockHasSuperset(block.items) ? ' · superset' : ''}`
                       }
                       isLast={idx === arr.length - 1}
                     />
@@ -1861,6 +2012,8 @@ export default function ExecutionScreen() {
                         // can be edited per set. Items with no explicit `sets`
                         // render exactly one row (totalSets = 1), unchanged.
                         const totalSets = item.sets ?? 1;
+                        const [gStart, gEnd] = supersetGroupRange(block.items, idx);
+                        const inSuperset = gEnd > gStart;
                         return Array.from({ length: totalSets }, (_, setIdx) => {
                           const rowKey = `${block.id}-${idx}-${setIdx}`;
                           const repsKey = `${block.id}-${idx}-${setIdx}`;
@@ -1874,7 +2027,11 @@ export default function ExecutionScreen() {
                           return (
                             <CompletionExerciseRow
                               key={rowKey} rowKey={rowKey} repsKey={repsKey} item={item}
-                              label={isMultiSet ? `set ${setIdx + 1}` : undefined}
+                              label={
+                                isMultiSet
+                                  ? `set ${setIdx + 1}${inSuperset ? ' · superset' : ''}`
+                                  : inSuperset ? 'superset' : undefined
+                              }
                               isSkipped={setSkipped}
                               isNotReached={notReached}
                               actualReps={actualReps} actualWeights={actualWeights} actualDurations={actualDurations}
@@ -1980,10 +2137,10 @@ export default function ExecutionScreen() {
       const nextItem = currentBlock.items[nextStep % currentBlock.items.length];
       return nextItem?.exerciseName ?? '';
     }
-    if (phase === 'rest' && restTypeRef.current === 'sets') {
-      const item = currentBlock.items[manualIdx];
-      const totalSets = item?.sets ?? 1;
-      return `Set ${manualSetIdx + 2}/${totalSets} – ${item?.exerciseName ?? ''}`;
+    if (phase === 'rest') {
+      // beginRest recorded what's coming after the rest (exercise + round/set),
+      // formatted for any block type — sets, superset wrap-around, or juarez.
+      return restNextLabelRef.current;
     }
     // Juarez Valley: "next up" is the next performance (the other exercise in
     // a superset, or the next rung for single), or the next block when done.
@@ -1997,10 +2154,23 @@ export default function ExecutionScreen() {
       const nextBlock = template.blocks[blockIdx + 1];
       return nextBlock ? getBlockDisplayLabel(nextBlock) : 'Done';
     }
-    const nextItem = currentBlock.items[manualIdx + 1];
-    if (nextItem) return nextItem.exerciseName;
-    const nextBlock = template.blocks[blockIdx + 1];
-    return nextBlock ? getBlockDisplayLabel(nextBlock) : 'Done';
+    // Standard block (incl. superset groups): "next up" is the next performance
+    // per the shared planner — the next grouped exercise, the next round's first
+    // exercise, the next standalone item, or the next block / Done.
+    const stdNext = planStandardAdvance(currentBlock, manualIdx, manualSetIdx);
+    const finishLabel = () => {
+      const nextBlock = template.blocks[blockIdx + 1];
+      return nextBlock ? getBlockDisplayLabel(nextBlock) : 'Done';
+    };
+    if (stdNext.kind === 'done') return finishLabel();
+    // Destination past the end → a trailing rest precedes the block finishing.
+    if (stdNext.nextIdx >= currentBlock.items.length) return finishLabel();
+    // Both 'next' and 'rest' carry the destination position; format it.
+    const nextDestItem = currentBlock.items[stdNext.nextIdx];
+    if (!nextDestItem) return '';
+    return stdNext.nextSet === 0
+      ? (nextDestItem.exerciseName || 'next exercise')
+      : `Set ${stdNext.nextSet + 1} – ${nextDestItem.exerciseName}`;
   })();
 
   const doneBtnLabel = (() => {
@@ -2011,8 +2181,14 @@ export default function ExecutionScreen() {
     }
     const item = currentBlock?.items[manualIdx];
     if (item && getExecutionType(item) === 'countup') return 'Stop & Record';
-    const totalSets = item?.sets ?? 1;
-    return totalSets > 1 ? `Set ${manualSetIdx + 1}/${totalSets} Done` : 'Exercise Done';
+    // Rounds are shared across a superset group, so read the count from the
+    // group (a standalone item is a size-1 group → its own sets).
+    const items = currentBlock?.items ?? [];
+    const gStart = items.length ? supersetGroupRange(items, manualIdx)[0] : 0;
+    const gEnd = items.length ? supersetGroupRange(items, manualIdx)[1] : 0;
+    const rounds = items[gStart]?.sets ?? 1;
+    if (rounds > 1) return `Set ${manualSetIdx + 1}/${rounds} Done`;
+    return gEnd > gStart ? 'Done' : 'Exercise Done';
   })();
 
   // Actual reps key for current exercise. The set index is part of the key so
@@ -2319,6 +2495,7 @@ function ActualRepsInputs({
               style={[styles.actualRepsInput, { borderColor: color }]}
               value={actualReps[`${repsKey}-L`] ?? item.reps}
               onCommit={(n) => onChangeReps(`${repsKey}-L`, n)}
+              commitOnBlur
               selectTextOnFocus
             />
           </View>
@@ -2328,6 +2505,7 @@ function ActualRepsInputs({
               style={[styles.actualRepsInput, { borderColor: color }]}
               value={actualReps[`${repsKey}-R`] ?? item.reps}
               onCommit={(n) => onChangeReps(`${repsKey}-R`, n)}
+              commitOnBlur
               selectTextOnFocus
             />
           </View>
@@ -2343,6 +2521,7 @@ function ActualRepsInputs({
         style={[styles.actualRepsInput, { borderColor: color }]}
         value={actualReps[repsKey] ?? item.reps}
         onCommit={(n) => onChangeReps(repsKey, n)}
+        commitOnBlur
         selectTextOnFocus
       />
     </View>
@@ -2372,6 +2551,7 @@ function WeightInput({
         value={actualWeights[repsKey] ?? item.weight}
         onCommit={(n) => onChangeWeight(repsKey, n)}
         isFloat
+        commitOnBlur
         selectTextOnFocus
       />
     </View>
@@ -2401,6 +2581,7 @@ function DurationInput({
         value={actualDurations[repsKey] ?? item.durationSeconds ?? 0}
         onCommit={(n) => onChangeDuration(repsKey, n)}
         min={0}
+        commitOnBlur
         selectTextOnFocus
       />
     </View>
